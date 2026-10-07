@@ -1,18 +1,20 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { 
   FileExplorer 
 } from './components/Explorer/FileExplorer';
-import { BearEditor } from './components/Editor/BearEditor';
+import { WysiwygEditor } from './components/Editor/WysiwygEditor';
 import { MonacoViewer } from './components/Editor/MonacoViewer';
 import { AgentPanel } from './components/Agent/AgentPanel';
 import { ReportViewer } from './components/WebReport/ReportViewer';
 import { TerminalPanel } from './components/Terminal/TerminalPanel';
 import { SettingsModal } from './components/SettingsModal';
+import { HelpModal } from './components/HelpModal';
 import type { 
   FileItem, 
   ChatMessage, 
   TokenUsage, 
-  VenvStatus 
+  VenvStatus,
+  ChatSessionSummary
 } from './types';
 import { 
   fetchFileTree, 
@@ -28,7 +30,12 @@ import {
   runPython, 
   streamAgentChat,
   fetchAgentConfig,
-  saveAgentConfig
+  saveAgentConfig,
+  fetchChatSessions,
+  fetchChatSession,
+  saveChatSession,
+  deleteChatSession,
+  cancelAgentExecution
 } from './services/api';
 import { 
   Code, 
@@ -38,7 +45,8 @@ import {
   Loader2,
   FileText,
   FileCode,
-  FlaskConical
+  FlaskConical,
+  HelpCircle
 } from 'lucide-react';
 
 export const App: React.FC = () => {
@@ -72,12 +80,19 @@ export const App: React.FC = () => {
       selectedModel: 'gemini-2.5-flash'
     };
   });
+  const [currentSessionId, setCurrentSessionId] = useState<string>(() => {
+    return localStorage.getItem('bionic_active_session_id') || `session_${Date.now()}`;
+  });
+  const [sessions, setSessions] = useState<ChatSessionSummary[]>([]);
+  const abortControllerRef = useRef<AbortController | null>(null);
+
   const [serverKeys, setServerKeys] = useState<{ gemini: boolean; openai: boolean; anthropic: boolean }>({
     gemini: false,
     openai: false,
     anthropic: false
   });
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
+  const [isHelpOpen, setIsHelpOpen] = useState<boolean>(false);
   const [isStreaming, setIsStreaming] = useState<boolean>(false);
   const [reportLastUpdated, setReportLastUpdated] = useState<number>(Date.now());
 
@@ -110,6 +125,23 @@ export const App: React.FC = () => {
         openai: agCfg.hasOpenaiKey,
         anthropic: agCfg.hasAnthropicKey
       });
+
+      // Load past sessions
+      try {
+        const sessionList = await fetchChatSessions();
+        setSessions(sessionList);
+        const storedId = localStorage.getItem('bionic_active_session_id');
+        if (storedId && sessionList.some(s => s.id === storedId)) {
+          const sessionData = await fetchChatSession(storedId);
+          if (sessionData?.messages?.length > 0) {
+            setMessages(sessionData.messages);
+            if (sessionData.tokens) setTotalTokens(sessionData.tokens);
+            setCurrentSessionId(storedId);
+          }
+        }
+      } catch {
+        // ignore session load error on first boot
+      }
     } catch (e) {
       console.error('Failed to load workspace:', e);
     }
@@ -239,6 +271,9 @@ export const App: React.FC = () => {
     setMessages(prev => [...prev, userMsg, initialAssistantMsg]);
     setIsStreaming(true);
 
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     try {
       const apiMessages = [...messages, userMsg].map(m => ({
         role: m.role,
@@ -254,7 +289,8 @@ export const App: React.FC = () => {
         provider: agentProvider,
         apiKey,
         baseUrl: agentConfig.ollamaBaseUrl,
-        model: agentConfig.selectedModel || (agentProvider === 'gemini' ? 'gemini-2.5-flash' : 'gpt-4o')
+        model: agentConfig.selectedModel || (agentProvider === 'gemini' ? 'gemini-2.5-flash' : 'gpt-4o'),
+        sessionId: currentSessionId
       };
 
       await streamAgentChat(apiMessages, activeConfig, (event) => {
@@ -328,18 +364,140 @@ export const App: React.FC = () => {
             }));
           }
         }
-      });
+      }, controller.signal);
     } catch (err: any) {
-      setMessages(prev => prev.map(m => {
-        if (m.id !== assistantMsgId) return m;
-        return { ...m, content: `Error: ${err.message}` };
-      }));
+      if (err.name !== 'AbortError') {
+        setMessages(prev => prev.map(m => {
+          if (m.id !== assistantMsgId) return m;
+          return { ...m, content: `Error: ${err.message}` };
+        }));
+      }
     } finally {
+      abortControllerRef.current = null;
       setIsStreaming(false);
       loadWorkspace();
       if (activeFilePath) {
         readFile(activeFilePath).then(data => setActiveFileContent(data.content));
       }
+
+      // Auto-save session
+      setMessages(currentMsgs => {
+        const firstUser = currentMsgs.find(m => m.role === 'user');
+        const title = firstUser ? (firstUser.content.slice(0, 42) + (firstUser.content.length > 42 ? '...' : '')) : 'Analysis Session';
+        saveChatSession({
+          id: currentSessionId,
+          title,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          messages: currentMsgs,
+          tokens: totalTokens
+        }).then(() => fetchChatSessions().then(setSessions)).catch(() => {});
+        return currentMsgs;
+      });
+    }
+  };
+
+  const handleCancelWork = async () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    try {
+      await cancelAgentExecution(currentSessionId);
+    } catch {}
+    setIsStreaming(false);
+    setMessages(prev => {
+      const last = prev[prev.length - 1];
+      if (last && last.role === 'assistant') {
+        const updatedTimeline = [
+          ...(last.timeline || []),
+          {
+            type: 'step' as const,
+            id: `cancel_${Date.now()}`,
+            title: 'Execution Stopped',
+            description: 'Work was cancelled by user.',
+            status: 'error' as const
+          }
+        ];
+        return [...prev.slice(0, -1), { ...last, timeline: updatedTimeline }];
+      }
+      return prev;
+    });
+  };
+
+  const handleSelectSession = async (id: string) => {
+    try {
+      const sessionData = await fetchChatSession(id);
+      if (sessionData) {
+        setCurrentSessionId(id);
+        localStorage.setItem('bionic_active_session_id', id);
+        setMessages(sessionData.messages || []);
+        if (sessionData.tokens) setTotalTokens(sessionData.tokens);
+      }
+    } catch (err: any) {
+      alert(`Could not load session: ${err.message}`);
+    }
+  };
+
+  const handleNewSession = () => {
+    const newId = `session_${Date.now()}`;
+    setCurrentSessionId(newId);
+    localStorage.setItem('bionic_active_session_id', newId);
+    setMessages([
+      {
+        id: 'welcome',
+        role: 'assistant',
+        content: `Started new analysis session. 🔬\n\nDescribe your scientific question or experimental data to begin!`,
+        timestamp: Date.now()
+      }
+    ]);
+    setTotalTokens({ promptTokens: 0, completionTokens: 0, totalTokens: 0, estimatedCostUsd: 0 });
+  };
+
+  const handleDeleteSession = async (id: string) => {
+    try {
+      await deleteChatSession(id);
+      const updated = await fetchChatSessions();
+      setSessions(updated);
+      if (id === currentSessionId) {
+        handleNewSession();
+      }
+    } catch (err: any) {
+      alert(`Could not delete session: ${err.message}`);
+    }
+  };
+
+  const handleExportMarkdown = async () => {
+    let md = `# Scientific Analysis Session Log\n\n**Session ID:** \`${currentSessionId}\`  \n**Exported:** ${new Date().toLocaleString()}\n\n---\n\n`;
+    for (const msg of messages) {
+      if (msg.role === 'user') {
+        md += `## 🧑‍🔬 Scientist Request\n\n${msg.content}\n\n`;
+      } else if (msg.role === 'assistant') {
+        md += `## 🤖 Agent Output\n\n`;
+        if (msg.timeline) {
+          for (const item of msg.timeline) {
+            if (item.type === 'thought') {
+              md += `> **Plan & Reasoning**:\n> ${item.content.replace(/\n/g, '\n> ')}\n\n`;
+            } else if (item.type === 'step') {
+              md += `### Action: \`${item.title}\`\n*${item.description}*\n\n`;
+              if (item.details) {
+                md += `\`\`\`text\n${item.details}\n\`\`\`\n\n`;
+              }
+            }
+          }
+        }
+        if (msg.content) {
+          md += `### Summary\n\n${msg.content}\n\n`;
+        }
+        md += `---\n\n`;
+      }
+    }
+    try {
+      await writeFile('REPORT.md', md);
+      await loadWorkspace();
+      handleSelectFile('REPORT.md');
+    } catch (err: any) {
+      alert(`Could not export report: ${err.message}`);
     }
   };
 
@@ -442,6 +600,18 @@ export const App: React.FC = () => {
               <span>Coding Mode: {codingMode ? 'ON' : 'OFF'}</span>
             </button>
           </div>
+
+          <div className="h-4 w-[1px] bg-gray-200" />
+
+          {/* Help & Documentation Button */}
+          <button
+            onClick={() => setIsHelpOpen(true)}
+            className="flex items-center space-x-1.5 px-2.5 py-1 rounded-full text-xs font-medium border border-gray-200 bg-gray-50 text-gray-700 hover:bg-gray-100 hover:text-gray-900 transition shadow-2xs cursor-pointer"
+            title="Open Documentation & Help"
+          >
+            <HelpCircle className="w-3.5 h-3.5 text-blue-600" />
+            <span>Help</span>
+          </button>
         </div>
       </header>
 
@@ -485,7 +655,7 @@ export const App: React.FC = () => {
             {viewMode === 'report' ? (
               <ReportViewer lastUpdated={reportLastUpdated} />
             ) : isMarkdown ? (
-              <BearEditor
+              <WysiwygEditor
                 key={activeFilePath}
                 filePath={activeFilePath}
                 initialContent={activeFileContent}
@@ -522,6 +692,13 @@ export const App: React.FC = () => {
           }}
           onOpenSettings={() => setIsSettingsOpen(true)}
           hasActiveKey={hasCurrentKey}
+          currentSessionId={currentSessionId}
+          sessions={sessions}
+          onSelectSession={handleSelectSession}
+          onNewSession={handleNewSession}
+          onDeleteSession={handleDeleteSession}
+          onCancelWork={handleCancelWork}
+          onExportMarkdown={handleExportMarkdown}
         />
       </div>
 
@@ -545,6 +722,12 @@ export const App: React.FC = () => {
             console.warn('Could not sync to backend:', e);
           }
         }}
+      />
+
+      {/* Documentation & Help Modal */}
+      <HelpModal
+        isOpen={isHelpOpen}
+        onClose={() => setIsHelpOpen(false)}
       />
     </div>
   );

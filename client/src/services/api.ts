@@ -121,15 +121,55 @@ export async function saveAgentConfig(config: any): Promise<{ success: boolean; 
   return res.json();
 }
 
+export async function fetchChatSessions(): Promise<any[]> {
+  const res = await fetch(`${API_BASE}/agent/sessions`);
+  if (!res.ok) throw new Error('Failed to fetch chat sessions');
+  const data = await res.json();
+  return data.sessions;
+}
+
+export async function fetchChatSession(id: string): Promise<any> {
+  const res = await fetch(`${API_BASE}/agent/sessions/${encodeURIComponent(id)}`);
+  if (!res.ok) throw new Error(`Failed to load chat session ${id}`);
+  return res.json();
+}
+
+export async function saveChatSession(session: any): Promise<any> {
+  const res = await fetch(`${API_BASE}/agent/sessions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(session)
+  });
+  if (!res.ok) throw new Error('Failed to save session');
+  return res.json();
+}
+
+export async function deleteChatSession(id: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/agent/sessions/${encodeURIComponent(id)}`, {
+    method: 'DELETE'
+  });
+  if (!res.ok) throw new Error('Failed to delete session');
+}
+
+export async function cancelAgentExecution(sessionId: string): Promise<void> {
+  await fetch(`${API_BASE}/agent/cancel`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionId })
+  });
+}
+
 export async function streamAgentChat(
   messages: any[],
   config: any,
-  onEvent: (event: any) => void
+  onEvent: (event: any) => void,
+  signal?: AbortSignal
 ): Promise<void> {
   const res = await fetch(`${API_BASE}/agent/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ messages, config })
+    body: JSON.stringify({ messages, config }),
+    signal
   });
 
   if (!res.ok) {

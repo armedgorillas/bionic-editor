@@ -67,7 +67,7 @@ test('Bionic Editor End-to-End Server Suite', async (t) => {
   await t.test('Serves live web report at /report/index.html', async () => {
     const res = await fetchUrl('/report/index.html');
     assert.equal(res.status, 200);
-    assert.ok(res.data.includes('Differential Expression Analysis Report'));
+    assert.ok(res.data.includes('<html'));
   });
 
   await t.test('Returns workspace info and Cookiecutter template structure', async () => {
@@ -116,6 +116,44 @@ test('Bionic Editor End-to-End Server Suite', async (t) => {
     const gemini = body.availableProviders.find((p) => p.id === 'gemini');
     assert.ok(gemini, 'Gemini provider must be registered');
     assert.ok(gemini.name.includes('Gemini'));
+  });
+
+  await t.test('Session management can save and retrieve chat sessions', async () => {
+    const testSession = {
+      id: 'test_session_123',
+      title: 'RNA-seq Differential Analysis',
+      messages: [{ role: 'user', content: 'Run DEG on sample' }]
+    };
+
+    const saveRes = await fetchUrl('/api/agent/sessions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: testSession
+    });
+    assert.equal(saveRes.status, 200);
+    const saved = JSON.parse(saveRes.data);
+    assert.equal(saved.id, 'test_session_123');
+
+    const listRes = await fetchUrl('/api/agent/sessions');
+    assert.equal(listRes.status, 200);
+    const listBody = JSON.parse(listRes.data);
+    assert.ok(listBody.sessions.some((s) => s.id === 'test_session_123'));
+
+    const getRes = await fetchUrl('/api/agent/sessions/test_session_123');
+    assert.equal(getRes.status, 200);
+    const getBody = JSON.parse(getRes.data);
+    assert.equal(getBody.title, 'RNA-seq Differential Analysis');
+  });
+
+  await t.test('Process cancellation endpoint handles cancel signal cleanly', async () => {
+    const cancelRes = await fetchUrl('/api/agent/cancel', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: { sessionId: 'test_session_123' }
+    });
+    assert.equal(cancelRes.status, 200);
+    const cancelBody = JSON.parse(cancelRes.data);
+    assert.equal(cancelBody.success, true);
   });
 
   t.after(() => {

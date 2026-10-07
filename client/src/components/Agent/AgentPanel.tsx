@@ -11,9 +11,15 @@ import {
   Coins,
   Copy,
   Sparkles,
-  Terminal
+  Terminal,
+  Square,
+  History,
+  Plus,
+  Trash2,
+  FileDown,
+  X
 } from 'lucide-react';
-import type { ChatMessage, TokenUsage } from '../../types';
+import type { ChatMessage, TokenUsage, ChatSessionSummary } from '../../types';
 
 interface AgentPanelProps {
   messages: ChatMessage[];
@@ -24,6 +30,13 @@ interface AgentPanelProps {
   onChangeProvider: (provider: string) => void;
   onOpenSettings: () => void;
   hasActiveKey?: boolean;
+  currentSessionId?: string;
+  sessions?: ChatSessionSummary[];
+  onSelectSession?: (id: string) => Promise<void>;
+  onNewSession?: () => void;
+  onDeleteSession?: (id: string) => Promise<void>;
+  onCancelWork?: () => void;
+  onExportMarkdown?: () => void;
 }
 
 export const AgentPanel: React.FC<AgentPanelProps> = ({
@@ -34,10 +47,18 @@ export const AgentPanel: React.FC<AgentPanelProps> = ({
   provider,
   onChangeProvider,
   onOpenSettings,
-  hasActiveKey = true
+  hasActiveKey = true,
+  currentSessionId,
+  sessions = [],
+  onSelectSession,
+  onNewSession,
+  onDeleteSession,
+  onCancelWork,
+  onExportMarkdown
 }) => {
   const [input, setInput] = useState<string>('');
   const [expandedSteps, setExpandedSteps] = useState<Record<string, boolean>>({});
+  const [showHistory, setShowHistory] = useState<boolean>(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -63,20 +84,20 @@ export const AgentPanel: React.FC<AgentPanelProps> = ({
   ];
 
   return (
-    <div className="flex flex-col h-full bg-[#fdfdfd] border-l border-gray-200 w-80 lg:w-96 select-none">
-      {/* Header with Token Usage & Provider */}
+    <div className="relative flex flex-col h-full bg-[#fdfdfd] border-l border-gray-200 w-80 lg:w-96 select-none">
+      {/* Header with Token Usage & Provider & History */}
       <div className="px-3.5 py-2.5 border-b border-gray-200 bg-white flex items-center justify-between">
-        <div className="flex items-center space-x-2">
-          <div className="w-6 h-6 rounded-md bg-blue-50 text-blue-600 flex items-center justify-center">
+        <div className="flex items-center space-x-2 truncate pr-2">
+          <div className="w-6 h-6 rounded-md bg-blue-50 text-blue-600 flex items-center justify-center flex-shrink-0">
             <Bot className="w-4 h-4" />
           </div>
-          <div>
-            <h3 className="text-xs font-semibold text-gray-800 leading-tight">AI Scientific Agent</h3>
-            <span className="text-[10px] text-gray-400">Collaborative Coding Harness</span>
+          <div className="truncate">
+            <h3 className="text-xs font-semibold text-gray-800 leading-tight truncate">AI Scientific Agent</h3>
+            <span className="text-[10px] text-gray-400">Coding Harness</span>
           </div>
         </div>
 
-        <div className="flex items-center space-x-1.5">
+        <div className="flex items-center space-x-1.5 flex-shrink-0">
           <select
             value={provider}
             onChange={(e) => onChangeProvider(e.target.value)}
@@ -89,10 +110,38 @@ export const AgentPanel: React.FC<AgentPanelProps> = ({
             <option value="ollama">Local (Ollama)</option>
           </select>
 
+          {/* Past Chats Button */}
+          <button
+            onClick={() => setShowHistory(!showHistory)}
+            title="Past Analysis Chats / Sessions"
+            className={`p-1 rounded transition flex items-center space-x-1 ${
+              showHistory 
+                ? 'bg-blue-100 text-blue-700' 
+                : 'text-gray-500 hover:text-gray-800 hover:bg-gray-100'
+            }`}
+          >
+            <History className="w-3.5 h-3.5" />
+          </button>
+
+          {/* New Chat Button */}
+          {onNewSession && (
+            <button
+              onClick={() => {
+                setShowHistory(false);
+                onNewSession();
+              }}
+              title="Start New Analysis Chat"
+              className="p-1 text-gray-500 hover:text-gray-800 hover:bg-gray-100 rounded transition"
+            >
+              <Plus className="w-3.5 h-3.5" />
+            </button>
+          )}
+
+          {/* Settings Button */}
           <button
             onClick={onOpenSettings}
             title="Agent API Keys & Configuration"
-            className="p-1 hover:bg-gray-100 rounded text-gray-500 hover:text-gray-800"
+            className="p-1 hover:bg-gray-100 rounded text-gray-500 hover:text-gray-800 transition"
           >
             <Settings2 className="w-3.5 h-3.5" />
           </button>
@@ -136,6 +185,112 @@ export const AgentPanel: React.FC<AgentPanelProps> = ({
           <div className="flex items-center space-x-1.5">
             <AlertCircle className="w-3.5 h-3.5 text-amber-600 flex-shrink-0" />
             <span><strong>{provider === 'gemini' ? 'Google Gemini' : provider} key required:</strong> Click to configure.</span>
+          </div>
+        </div>
+      )}
+
+      {/* Past Sessions Drawer Overlay */}
+      {showHistory && (
+        <div className="absolute inset-x-0 top-[76px] bottom-0 z-30 bg-white/95 backdrop-blur-sm border-b border-gray-200 flex flex-col shadow-lg select-none">
+          <div className="px-3.5 py-2.5 border-b border-gray-200 bg-gray-50/80 flex items-center justify-between">
+            <div className="flex items-center space-x-1.5 text-xs font-semibold text-gray-800">
+              <History className="w-3.5 h-3.5 text-blue-600" />
+              <span>Past Analysis Chats</span>
+              <span className="text-[10px] bg-gray-200 text-gray-700 px-1.5 rounded-full">
+                {sessions.length}
+              </span>
+            </div>
+            <button
+              onClick={() => setShowHistory(false)}
+              className="p-1 hover:bg-gray-200 rounded text-gray-500 hover:text-gray-800"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+
+          <div className="p-2 border-b border-gray-100 bg-white flex items-center space-x-2">
+            {onNewSession && (
+              <button
+                onClick={() => {
+                  setShowHistory(false);
+                  onNewSession();
+                }}
+                className="flex-1 flex items-center justify-center space-x-1.5 bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded text-xs font-medium shadow-2xs transition"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>New Analysis Chat</span>
+              </button>
+            )}
+            {onExportMarkdown && (
+              <button
+                onClick={onExportMarkdown}
+                title="Export current session as REPORT.md"
+                className="flex items-center space-x-1 px-2.5 py-1.5 bg-gray-50 hover:bg-gray-100 text-gray-700 border border-gray-200 rounded text-xs transition"
+              >
+                <FileDown className="w-3.5 h-3.5" />
+                <span>Export</span>
+              </button>
+            )}
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-2 space-y-1">
+            {sessions.length === 0 ? (
+              <div className="p-4 text-center text-xs text-gray-400">
+                No past sessions saved yet. Start an analysis and your chat history will be automatically stored in workspace/.bionic/sessions/.
+              </div>
+            ) : (
+              sessions.map(s => {
+                const isActive = currentSessionId === s.id;
+                const formattedDate = new Date(s.updatedAt).toLocaleDateString(undefined, {
+                  month: 'short',
+                  day: 'numeric',
+                  hour: '2-digit',
+                  minute: '2-digit'
+                });
+
+                return (
+                  <div
+                    key={s.id}
+                    onClick={() => {
+                      if (onSelectSession) {
+                        onSelectSession(s.id);
+                        setShowHistory(false);
+                      }
+                    }}
+                    className={`group flex items-center justify-between p-2.5 rounded-lg border text-xs cursor-pointer transition ${
+                      isActive 
+                        ? 'bg-blue-50/80 border-blue-200 text-blue-900 font-medium' 
+                        : 'bg-white border-gray-100 hover:border-gray-200 hover:bg-gray-50 text-gray-700'
+                    }`}
+                  >
+                    <div className="truncate pr-2">
+                      <div className="truncate font-medium">{s.title}</div>
+                      <div className="text-[10px] text-gray-400 mt-0.5 flex items-center space-x-2">
+                        <span>{formattedDate}</span>
+                        <span>•</span>
+                        <span>{s.messageCount} messages</span>
+                      </div>
+                    </div>
+
+                    {onDeleteSession && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (confirm(`Delete session "${s.title}"?`)) {
+                            onDeleteSession(s.id);
+                          }
+                        }}
+                        className="opacity-0 group-hover:opacity-100 p-1 hover:text-red-600 text-gray-400 rounded transition"
+                        title="Delete past chat"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+                );
+              })
+            )}
           </div>
         </div>
       )}
@@ -295,9 +450,21 @@ export const AgentPanel: React.FC<AgentPanelProps> = ({
         ))}
 
         {isStreaming && (
-          <div className="flex items-center space-x-2 text-xs text-blue-600 bg-blue-50/70 p-2.5 rounded-lg border border-blue-100">
-            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-            <span>Agent is analyzing workspace and executing tasks...</span>
+          <div className="flex items-center justify-between text-xs text-blue-700 bg-blue-50/90 p-2.5 rounded-lg border border-blue-200">
+            <div className="flex items-center space-x-2 truncate pr-2">
+              <Loader2 className="w-3.5 h-3.5 animate-spin flex-shrink-0" />
+              <span className="truncate">Executing pipeline in workspace...</span>
+            </div>
+            {onCancelWork && (
+              <button
+                onClick={onCancelWork}
+                className="flex items-center space-x-1 bg-red-600 hover:bg-red-700 text-white px-2 py-0.5 rounded text-[11px] font-medium shadow-2xs transition flex-shrink-0 cursor-pointer"
+                title="Stop work"
+              >
+                <Square className="w-2.5 h-2.5 fill-current" />
+                <span>Stop</span>
+              </button>
+            )}
           </div>
         )}
 
@@ -317,7 +484,7 @@ export const AgentPanel: React.FC<AgentPanelProps> = ({
         ))}
       </div>
 
-      {/* Input Form */}
+      {/* Input Form with Stop Button */}
       <form onSubmit={handleSubmit} className="p-2.5 border-t border-gray-200 bg-white">
         <div className="relative flex items-center">
           <textarea
@@ -331,15 +498,28 @@ export const AgentPanel: React.FC<AgentPanelProps> = ({
               }
             }}
             placeholder="Ask agent to plan, analyze data, or build reports..."
-            className="w-full text-xs p-2.5 pr-10 border border-gray-200 rounded-lg outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 resize-none leading-normal text-gray-800 placeholder-gray-400"
+            className="w-full text-xs p-2.5 pr-16 border border-gray-200 rounded-lg outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 resize-none leading-normal text-gray-800 placeholder-gray-400"
           />
-          <button
-            type="submit"
-            disabled={!input.trim() || isStreaming}
-            className="absolute right-2 bottom-2.5 p-1.5 rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40 disabled:hover:bg-blue-600 transition"
-          >
-            <Send className="w-3.5 h-3.5" />
-          </button>
+
+          {isStreaming ? (
+            <button
+              type="button"
+              onClick={onCancelWork}
+              className="absolute right-2 bottom-2 px-2.5 py-1.5 rounded-md bg-red-600 text-white hover:bg-red-700 shadow-xs flex items-center space-x-1 text-xs font-medium transition cursor-pointer"
+              title="Stop work / Cancel execution"
+            >
+              <Square className="w-3 h-3 fill-current" />
+              <span>Stop</span>
+            </button>
+          ) : (
+            <button
+              type="submit"
+              disabled={!input.trim()}
+              className="absolute right-2 bottom-2.5 p-1.5 rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40 disabled:hover:bg-blue-600 transition cursor-pointer"
+            >
+              <Send className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
       </form>
     </div>

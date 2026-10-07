@@ -18,6 +18,7 @@ export interface AgentConfig {
   apiKey?: string;
   model?: string;
   baseUrl?: string;
+  sessionId?: string;
 }
 
 export interface TokenUsage {
@@ -128,12 +129,12 @@ export interface DetailedToolResult {
   exitCode?: number;
 }
 
-export async function executeTool(name: string, args: any): Promise<string> {
-  const res = await executeToolDetailed(name, args);
+export async function executeTool(name: string, args: any, sessionId?: string): Promise<string> {
+  const res = await executeToolDetailed(name, args, sessionId);
   return res.output;
 }
 
-export async function executeToolDetailed(name: string, args: any): Promise<DetailedToolResult> {
+export async function executeToolDetailed(name: string, args: any, sessionId?: string): Promise<DetailedToolResult> {
   try {
     switch (name) {
       case 'read_file': {
@@ -157,7 +158,7 @@ export async function executeToolDetailed(name: string, args: any): Promise<Deta
         };
       }
       case 'run_python': {
-        const res = await runPythonScript(args.script_path, args.args || []);
+        const res = await runPythonScript(args.script_path, args.args || [], undefined, sessionId);
         const output = [
           `Exit code: ${res.code}`,
           res.stdout ? `\n--- STDOUT ---\n${res.stdout}` : '',
@@ -170,7 +171,7 @@ export async function executeToolDetailed(name: string, args: any): Promise<Deta
         };
       }
       case 'run_command': {
-        const res = await runBashCommand(args.command);
+        const res = await runBashCommand(args.command, undefined, sessionId);
         const output = [
           `Exit code: ${res.code}`,
           res.stdout ? `\n--- STDOUT ---\n${res.stdout}` : '',
@@ -360,6 +361,7 @@ async function runOpenAILoop(
   client: OpenAI,
   model: string,
   messages: AgentMessage[],
+  config: AgentConfig,
   onEvent: (event: StepEvent) => void
 ): Promise<{ text: string; tokens: TokenUsage }> {
   let promptTokens = 0;
@@ -466,7 +468,7 @@ async function runOpenAILoop(
           status: 'running'
         });
 
-        const result = await executeToolDetailed(fnName, fnArgs);
+        const result = await executeToolDetailed(fnName, fnArgs, config.sessionId);
 
         onEvent({
           type: 'step_done',
@@ -533,7 +535,7 @@ async function handleOpenAIAgent(
     baseURL
   });
 
-  return runOpenAILoop(client, model, messages, onEvent);
+  return runOpenAILoop(client, model, messages, config, onEvent);
 }
 
 async function handleGeminiAgent(
@@ -555,7 +557,7 @@ async function handleGeminiAgent(
     baseURL
   });
 
-  return runOpenAILoop(client, model, messages, onEvent);
+  return runOpenAILoop(client, model, messages, config, onEvent);
 }
 
 async function handleAnthropicAgent(

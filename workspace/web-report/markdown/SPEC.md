@@ -330,4 +330,6 @@ distribution_allowed: false
 
 **## PROJECT SUMMARY LOG**
 
-{{ In this section, maintain a running bulleted log of every major implementation step, technical decision, and scientific milestone achieved during this case study. }}
+- **Base Platform Established**: Single-page interactive SCimilarity benchmark report recreating Figure 3 (3b, 3c, 3d) using Plotly and Van Gogh "The Starry Night" art-inspired palette.
+- **Scientific Validation Automated**: Validation test harness `label_count_check.py` integrated via `scripts/run_tests.py` and reflected in web report.
+- **Interactive Cat Science Fact Feature Added**: Integrated an interactive "Feline Science Fact" card in `web-report/index.html` and `web-report/visualization.js` highlighting comparative genomics (90.2% genomic synteny with human genomes, cellular mechanics, and sensory biology), featuring a rotating fact button and sidebar navigation link.

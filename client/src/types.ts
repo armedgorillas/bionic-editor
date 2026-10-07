@@ -38,6 +38,15 @@ export interface ChatMessage {
   timestamp: number;
 }
 
+export interface ChatSessionSummary {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  messageCount: number;
+  tokens?: TokenUsage;
+}
+
 export interface VenvStatus {
   exists: boolean;
   pythonPath: string;

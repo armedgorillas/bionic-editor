@@ -22,7 +22,7 @@ import {
   Code2
 } from 'lucide-react';
 
-interface BearEditorProps {
+interface WysiwygEditorProps {
   filePath: string;
   initialContent: string;
   onSave: (path: string, content: string) => Promise<void>;
@@ -61,7 +61,7 @@ const CustomImage = Image.extend({
   },
 });
 
-export const BearEditor: React.FC<BearEditorProps> = ({
+export const WysiwygEditor: React.FC<WysiwygEditorProps> = ({
   filePath,
   initialContent,
   onSave,
@@ -182,7 +182,7 @@ export const BearEditor: React.FC<BearEditorProps> = ({
 
   return (
     <div className="flex flex-col h-full bg-[#fdfdfd] overflow-hidden">
-      {/* Bear Minimal Toolbar */}
+      {/* Minimal WYSIWYG Toolbar */}
       <div className="flex items-center justify-between px-6 py-2 border-b border-gray-200/80 bg-white/95 backdrop-blur-sm select-none">
         <div className="flex items-center space-x-1 text-gray-600">
           <button
@@ -331,3 +331,5 @@ export const BearEditor: React.FC<BearEditorProps> = ({
     </div>
   );
 };
+
+export const BearEditor = WysiwygEditor;

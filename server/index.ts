@@ -22,11 +22,18 @@ import {
   getVenvStatus,
   createVenv,
   installRequirements,
-  runPythonScript
+  runPythonScript,
+  killSessionProcesses
 } from './services/venv.js';
 import { runAgentConversation, StepEvent } from './services/agent.js';
 import { initFileWatcher } from './services/fileWatcher.js';
 import { TerminalSession } from './services/terminal.js';
+import {
+  listSessions,
+  getSession,
+  saveSession,
+  deleteSession
+} from './services/sessionManager.js';
 
 // Initialize workspace on start
 ensureWorkspaceDir();
@@ -164,7 +171,7 @@ app.post('/api/files/upload', upload.single('file'), (req, res) => {
   res.json({ success: true, filename: req.file.originalname });
 });
 
-// Stream raw local files (images, assets) for inline Bear WYSIWYG
+// Stream raw local files (images, assets) for inline WYSIWYG editor
 app.use('/api/files/raw', (req, res) => {
   try {
     const rawPath = req.path.replace(/^\//, '');
@@ -280,12 +287,67 @@ app.post('/api/agent/save-config', (req, res) => {
   });
 });
 
+// Session history endpoints
+app.get('/api/agent/sessions', (_req, res) => {
+  try {
+    const list = listSessions();
+    res.json({ sessions: list });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/agent/sessions/:id', (req, res) => {
+  try {
+    const session = getSession(req.params.id);
+    if (!session) return res.status(404).json({ error: 'Session not found' });
+    res.json(session);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/agent/sessions', (req, res) => {
+  try {
+    const saved = saveSession(req.body);
+    res.json(saved);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/agent/sessions/:id', (req, res) => {
+  try {
+    const deleted = deleteSession(req.params.id);
+    res.json({ success: deleted });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Process cancellation endpoint (Stopping work)
+app.post('/api/agent/cancel', (req, res) => {
+  const { sessionId } = req.body;
+  if (!sessionId) {
+    return res.status(400).json({ error: 'sessionId is required' });
+  }
+  const count = killSessionProcesses(sessionId);
+  res.json({ success: true, killedCount: count });
+});
+
 // Agent chat with Server-Sent Events (SSE)
 app.post('/api/agent/chat', async (req, res) => {
   const { messages, config } = req.body;
   if (!messages || !Array.isArray(messages)) {
     return res.status(400).json({ error: 'Messages array is required' });
   }
+
+  const sessionId = config?.sessionId;
+  req.on('close', () => {
+    if (sessionId) {
+      killSessionProcesses(sessionId);
+    }
+  });
 
   // Set up SSE headers
   res.setHeader('Content-Type', 'text/event-stream');
@@ -380,6 +442,16 @@ if (fs.existsSync(clientDist)) {
     next();
   });
 }
+
+server.on('error', (err: any) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`\n❌ Error: Port ${PORT} is already in use by another process.`);
+    console.error(`💡 To free port ${PORT}, run: fuser -k ${PORT}/tcp (or set PORT=${PORT + 1})\n`);
+    process.exit(1);
+  } else {
+    console.error('Server error:', err);
+  }
+});
 
 server.listen(PORT, () => {
   console.log(`\n======================================================`);
