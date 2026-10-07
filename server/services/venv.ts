@@ -102,10 +102,39 @@ export function installRequirements(): Promise<{ success: boolean; output: strin
   });
 }
 
+const activeProcesses = new Map<string, Set<any>>();
+
+export function registerSessionProcess(sessionId: string, proc: any): () => void {
+  if (!activeProcesses.has(sessionId)) {
+    activeProcesses.set(sessionId, new Set());
+  }
+  const set = activeProcesses.get(sessionId)!;
+  set.add(proc);
+  return () => {
+    set.delete(proc);
+    if (set.size === 0) activeProcesses.delete(sessionId);
+  };
+}
+
+export function killSessionProcesses(sessionId: string): number {
+  const set = activeProcesses.get(sessionId);
+  if (!set || set.size === 0) return 0;
+  let count = 0;
+  for (const proc of set) {
+    try {
+      proc.kill('SIGKILL');
+      count++;
+    } catch {}
+  }
+  activeProcesses.delete(sessionId);
+  return count;
+}
+
 export function runPythonScript(
   scriptRelPath: string,
   args: string[] = [],
-  onData?: (data: string) => void
+  onData?: (data: string) => void,
+  sessionId?: string
 ): Promise<{ success: boolean; code: number; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     const pythonPath = getVenvPythonPath();
@@ -122,6 +151,8 @@ export function runPythonScript(
       env
     });
 
+    const unregister = sessionId ? registerSessionProcess(sessionId, proc) : null;
+
     let stdout = '';
     let stderr = '';
 
@@ -138,6 +169,7 @@ export function runPythonScript(
     });
 
     proc.on('close', (code) => {
+      if (unregister) unregister();
       resolve({
         success: code === 0,
         code: code ?? 0,
@@ -147,6 +179,7 @@ export function runPythonScript(
     });
 
     proc.on('error', (err) => {
+      if (unregister) unregister();
       resolve({
         success: false,
         code: -1,
@@ -159,7 +192,8 @@ export function runPythonScript(
 
 export function runBashCommand(
   cmd: string,
-  onData?: (data: string) => void
+  onData?: (data: string) => void,
+  sessionId?: string
 ): Promise<{ success: boolean; code: number; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     const env = {
@@ -171,6 +205,8 @@ export function runBashCommand(
       cwd: WORKSPACE_DIR,
       env
     });
+
+    const unregister = sessionId ? registerSessionProcess(sessionId, proc) : null;
 
     let stdout = '';
     let stderr = '';
@@ -188,6 +224,7 @@ export function runBashCommand(
     });
 
     proc.on('close', (code) => {
+      if (unregister) unregister();
       resolve({
         success: code === 0,
         code: code ?? 0,
@@ -197,6 +234,7 @@ export function runBashCommand(
     });
 
     proc.on('error', (err) => {
+      if (unregister) unregister();
       resolve({
         success: false,
         code: -1,
