@@ -8,6 +8,7 @@ import { AgentPanel } from './components/Agent/AgentPanel';
 import { ReportViewer } from './components/WebReport/ReportViewer';
 import { TerminalPanel } from './components/Terminal/TerminalPanel';
 import { SettingsModal } from './components/SettingsModal';
+import { HelpModal } from './components/HelpModal';
 import type { 
   FileItem, 
   ChatMessage, 
@@ -44,7 +45,8 @@ import {
   Loader2,
   FileText,
   FileCode,
-  FlaskConical
+  FlaskConical,
+  HelpCircle
 } from 'lucide-react';
 
 export const App: React.FC = () => {
@@ -90,6 +92,7 @@ export const App: React.FC = () => {
     anthropic: false
   });
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
+  const [isHelpOpen, setIsHelpOpen] = useState<boolean>(false);
   const [isStreaming, setIsStreaming] = useState<boolean>(false);
   const [reportLastUpdated, setReportLastUpdated] = useState<number>(Date.now());
 
@@ -597,6 +600,18 @@ export const App: React.FC = () => {
               <span>Coding Mode: {codingMode ? 'ON' : 'OFF'}</span>
             </button>
           </div>
+
+          <div className="h-4 w-[1px] bg-gray-200" />
+
+          {/* Help & Documentation Button */}
+          <button
+            onClick={() => setIsHelpOpen(true)}
+            className="flex items-center space-x-1.5 px-2.5 py-1 rounded-full text-xs font-medium border border-gray-200 bg-gray-50 text-gray-700 hover:bg-gray-100 hover:text-gray-900 transition shadow-2xs cursor-pointer"
+            title="Open Documentation & Help"
+          >
+            <HelpCircle className="w-3.5 h-3.5 text-blue-600" />
+            <span>Help</span>
+          </button>
         </div>
       </header>
 
@@ -707,6 +722,12 @@ export const App: React.FC = () => {
             console.warn('Could not sync to backend:', e);
           }
         }}
+      />
+
+      {/* Documentation & Help Modal */}
+      <HelpModal
+        isOpen={isHelpOpen}
+        onClose={() => setIsHelpOpen(false)}
       />
     </div>
   );

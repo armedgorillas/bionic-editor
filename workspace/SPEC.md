@@ -2,19 +2,21 @@
 
 This document is a self-contained specification for recreating the skeleton of the heimberg2025 SCimilarity visualization project. Instead of processing raw biological data, this case study focuses on establishing the correct directory structure, Python environment, mock data generation, and the front-end web application skeleton.
 
+*something here*
+
 ---
 
 ## **0. Group Registration**
 
 Before you begin, your agent will ask for your group members' names and a group name. This information will be used to register your project and generate your unique deployment URL.
 
-**---**
+---
 
-**## 1. Background and Goal**
+## **1. Background and Goal**
 
 Recreate the web visualization for Figure 3 from:
 
-&gt; Heimberg et al. (2024). "A cell atlas foundation model for scalable search of similar human cells." *Nature* 638, 1085–1094.
+> Heimberg et al. (2024). "A cell atlas foundation model for scalable search of similar human cells." *Nature* 638, 1085–1094.
 
 **\*\*What Figure 3 shows (kidney dataset):\*\***
 
@@ -330,4 +332,6 @@ distribution_allowed: false
 
 **## PROJECT SUMMARY LOG**
 
-{{ In this section, maintain a running bulleted log of every major implementation step, technical decision, and scientific milestone achieved during this case study. }}
+- **Base Platform Established**: Single-page interactive SCimilarity benchmark report recreating Figure 3 (3b, 3c, 3d) using Plotly and Van Gogh "The Starry Night" art-inspired palette.
+- **Scientific Validation Automated**: Validation test harness `label_count_check.py` integrated via `scripts/run_tests.py` and reflected in web report.
+- **Interactive Cat Science Fact Feature Added**: Integrated an interactive "Feline Science Fact" card in `web-report/index.html` and `web-report/visualization.js` highlighting comparative genomics (90.2% genomic synteny with human genomes, cellular mechanics, and sensory biology), featuring a rotating fact button and sidebar navigation link.

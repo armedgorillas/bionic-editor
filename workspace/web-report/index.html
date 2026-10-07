@@ -622,6 +622,92 @@
       color: #1e293b;
     }
 
+    /* Cat Fact Card */
+    .cat-fact-card {
+      display: flex;
+      align-items: flex-start;
+      gap: 1.25rem;
+      background: linear-gradient(135deg, #f8fafc 0%, #eff6ff 60%, #fefce8 100%);
+      border: 1px solid var(--border-color);
+      border-left: 5px solid var(--color-gold);
+      border-radius: var(--radius);
+      padding: 1.25rem 1.5rem;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .cat-fact-icon {
+      font-size: 2.2rem;
+      line-height: 1;
+      padding: 0.6rem;
+      background: #ffffff;
+      border-radius: 50%;
+      box-shadow: var(--shadow-sm);
+      border: 1px solid #e2e8f0;
+      flex-shrink: 0;
+    }
+
+    .cat-fact-content {
+      flex: 1;
+    }
+
+    .cat-fact-subtitle {
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--color-primary);
+      margin-bottom: 0.35rem;
+    }
+
+    .cat-fact-text {
+      font-size: 0.975rem;
+      line-height: 1.6;
+      color: var(--text-main);
+      margin-bottom: 0.85rem;
+    }
+
+    .cat-fact-footer {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .cat-fact-tag {
+      font-size: 0.75rem;
+      font-weight: 600;
+      padding: 0.25rem 0.6rem;
+      border-radius: 999px;
+      background: #ffffff;
+      border: 1px solid var(--border-color);
+      color: #475569;
+    }
+
+    .cat-fact-refresh-btn {
+      margin-left: auto;
+      background: var(--color-sky);
+      color: #ffffff;
+      border: none;
+      border-radius: 6px;
+      padding: 0.4rem 0.85rem;
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s ease, transform 0.1s ease;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+    }
+
+    .cat-fact-refresh-btn:hover {
+      background: var(--color-primary);
+      transform: translateY(-1px);
+    }
+
+    .cat-fact-refresh-btn:active {
+      transform: translateY(0);
+    }
+
     /* Footer */
     footer.report-footer {
       margin-top: 2.5rem;
@@ -671,7 +757,7 @@
   </aside>
 
   <!-- Main Content Area -->
-  <div class="main-wrapper">
+  <main class="main-wrapper">
     <!-- Header: title + paper citation -->
     <header class="report-header">
       <h1 id="sec-title">SCimilarity Foundation Model: Benchmark Report</h1>
@@ -757,6 +843,20 @@
       <div id="concordance-heatmap" class="heatmap-container"></div>
     </section>
 
+    <!-- Full-width: Embedded Figure -->
+    <section class="card">
+      <div class="card-header">
+        <h2 id="sec-sample-figure">Embedded Figure: Signal Dynamics</h2>
+        <p>Publication-quality analytical plot illustrating damped oscillation signal and decay envelope.</p>
+      </div>
+      <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 1.25rem 0;">
+        <img src="figures/sample_figure.png" alt="Sample Figure - Damped Oscillation Analysis" style="max-width: 100%; max-height: 520px; width: auto; border-radius: var(--radius); border: 1px solid var(--border-color); box-shadow: var(--shadow-sm);">
+        <p style="margin-top: 0.85rem; font-size: 0.85rem; color: var(--text-muted); text-align: center;">
+          <em>Embedded plot: <code>figures/sample_figure.png</code> (Damped harmonic oscillation signal model, 300 DPI).</em>
+        </p>
+      </div>
+    </section>
+
     <!-- Full-width: Scientific Validation Test Results Table -->
     <section class="card">
       <div class="card-header">
@@ -801,6 +901,32 @@
       </div>
     </section>
 
+    <!-- Full-width: Cat Fact Card -->
+    <section class="card" id="cat-fact-section">
+      <div class="card-header">
+        <h2 id="sec-cat-fact">Feline Science Fact</h2>
+        <p>Curious biological and genomic insights into our feline companions.</p>
+      </div>
+      <div class="cat-fact-card">
+        <div class="cat-fact-icon" aria-hidden="true">🐱</div>
+        <div class="cat-fact-content">
+          <div class="cat-fact-subtitle">Did you know?</div>
+          <div class="cat-fact-text" id="cat-fact-text">
+            Domestic cats share approximately <strong>90.2% of their genomic sequence</strong> with humans. Because of high chromosomal synteny, feline single-cell transcriptomics serves as an insightful model for human comparative genomics and kidney physiology!
+          </div>
+          <div class="cat-fact-footer">
+            <div id="cat-fact-tags" style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+              <span class="cat-fact-tag">🧬 Comparative Genomics</span>
+              <span class="cat-fact-tag">🧫 Cell Biology</span>
+            </div>
+            <button id="cat-fact-btn" class="cat-fact-refresh-btn" type="button" title="View another cat fact">
+              <span>🐾 Another Cat Fact</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- Footer -->
     <footer class="report-footer">
       <p>This application was created during a Bio-IT 2026 workshop on AI Upskilling for Computational Biologists.</p>
@@ -811,7 +937,7 @@
         <span>distribution_allowed: false</span>
       </div>
     </footer>
-  </div>
+  </main>
 
   <!-- Visualization Script -->
   <script src="visualization.js"></script>

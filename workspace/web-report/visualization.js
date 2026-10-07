@@ -11,6 +11,30 @@ let metadata = null;
 let testResults = null;
 let currentHighlight = ''; // Currently highlighted cell type ('' = all)
 
+// Curated Biological Cat Facts
+const CAT_FACTS = [
+  {
+    fact: "Domestic cats share approximately <strong>90.2% of their genomic sequence</strong> with humans. Because of high chromosomal synteny, feline single-cell transcriptomics serves as an insightful model for human comparative genomics and kidney physiology!",
+    tags: ["🧬 Comparative Genomics", "🧫 Cell Biology"]
+  },
+  {
+    fact: "Cats have <strong>32 individual muscles</strong> in each outer ear (pinna), controlled by specialized motor neurons that allow 180-degree independent rotation to pinpoint ultrasonic rodent vocalizations up to 64 kHz.",
+    tags: ["👂 Neurobiology", "🐾 Anatomy"]
+  },
+  {
+    fact: "A domestic cat's purr vibrates at a resonant frequency between <strong>25 and 150 Hertz</strong>. In musculoskeletal biomechanics, acoustic vibrations in this exact frequency window are clinically proven to improve bone density and stimulate tissue regeneration.",
+    tags: ["🦴 Biomechanics", "🔊 Acoustics"]
+  },
+  {
+    fact: "Calico and tortoiseshell coat patterns in cats are textbook mammalian demonstrations of <strong>dosage compensation via Lyonization (random X-chromosome inactivation)</strong> occurring early in embryonic blastocyst development.",
+    tags: ["🧬 Epigenetics", "🔬 Developmental Genetics"]
+  },
+  {
+    fact: "Cats possess a specialized chemosensory organ on the palate known as the <strong>vomeronasal (Jacobson's) organ</strong>, containing distinct olfactory receptor neurons that process pheromones via the characteristic Flehmen grimace.",
+    tags: ["👃 Chemosensory", "🐾 Physiology"]
+  }
+];
+
 /**
  * Loads all four JSON data files in parallel
  */
@@ -501,13 +525,40 @@ function renderGroupInfo(containerId) {
 }
 
 /**
+ * Sets up interactive Cat Fact component
+ */
+function setupCatFact() {
+  const factText = document.getElementById('cat-fact-text');
+  const tagsContainer = document.getElementById('cat-fact-tags');
+  const btn = document.getElementById('cat-fact-btn');
+  if (!factText || !btn) return;
+
+  let currentIndex = 0;
+
+  function renderFact(index) {
+    const item = CAT_FACTS[index];
+    factText.innerHTML = item.fact;
+    if (tagsContainer) {
+      tagsContainer.innerHTML = item.tags.map(t => `<span class="cat-fact-tag">${escapeHtml(t)}</span>`).join('');
+    }
+  }
+
+  btn.addEventListener('click', () => {
+    currentIndex = (currentIndex + 1) % CAT_FACTS.length;
+    renderFact(currentIndex);
+  });
+
+  renderFact(0);
+}
+
+/**
  * Automatically scans page headings and populates sidebar table of contents
  */
 function generateTOC(containerId) {
   const container = document.getElementById(containerId);
   if (!container) return;
 
-  const headings = document.querySelectorAll('main h2[id], main h3[id]');
+  const headings = document.querySelectorAll('main h2[id], main h3[id], .main-wrapper h2[id], .main-wrapper h3[id]');
   if (!headings.length) {
     container.innerHTML = '<p class="toc-empty">No sections found.</p>';
     return;
@@ -555,6 +606,7 @@ async function init() {
   renderTestResultsTable('test-results-table');
   renderSiteTree('site-tree');
   renderGroupInfo('group-info');
+  setupCatFact();
   generateTOC('sidebar-toc');
 
   // Handle window resizing for responsive Plotly charts
