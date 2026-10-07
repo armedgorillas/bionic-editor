@@ -443,6 +443,16 @@ if (fs.existsSync(clientDist)) {
   });
 }
 
+server.on('error', (err: any) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`\n❌ Error: Port ${PORT} is already in use by another process.`);
+    console.error(`💡 To free port ${PORT}, run: fuser -k ${PORT}/tcp (or set PORT=${PORT + 1})\n`);
+    process.exit(1);
+  } else {
+    console.error('Server error:', err);
+  }
+});
+
 server.listen(PORT, () => {
   console.log(`\n======================================================`);
   console.log(`🔬 Bionic Editor running at http://localhost:${PORT}`);
