@@ -1,0 +1,53 @@
+{
+  "values": [
+    [
+      88.31,
+      2.47,
+      2.77,
+      2.64,
+      3.49
+    ],
+    [
+      2.86,
+      91.11,
+      2.45,
+      2.07,
+      3.7
+    ],
+    [
+      2.6,
+      2.67,
+      90.05,
+      2.82,
+      3.05
+    ],
+    [
+      3.9,
+      1.88,
+      2.94,
+      88.7,
+      2.4
+    ],
+    [
+      2.34,
+      1.88,
+      1.79,
+      3.77,
+      87.36
+    ]
+  ],
+  "author_labels": [
+    "Podocyte",
+    "Proximal Tubule",
+    "Loop of Henle",
+    "Distal Convoluted Tubule",
+    "Collecting Duct"
+  ],
+  "pred_labels": [
+    "Podocyte",
+    "Proximal Tubule",
+    "Loop of Henle",
+    "Distal Convoluted Tubule",
+    "Collecting Duct"
+  ]
+}

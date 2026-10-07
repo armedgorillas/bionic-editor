@@ -1,0 +1,28 @@
+# Secrets & Environment variables
+.env
+.env.*
+*.env
+
+# Dependencies
+node_modules/
+client/node_modules/
+
+# Production build outputs
+client/dist/
+dist/
+dist-server/
+
+# Python Virtual Environments & caches
+.venv/
+workspace/.venv/
+**/__pycache__/
+*.py[cod]
+*$py.class
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS artifacts
+.DS_Store
+Thumbs.db

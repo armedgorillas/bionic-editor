@@ -1,0 +1,44 @@
+{
+  "group_name": "SCimilarity Nephron Atlas Research Team",
+  "members": [
+    "Sonia Timberlake",
+    "Ryan Bellmore",
+    "Bionic AI Collaborator"
+  ],
+  "dataset_name": "Human Kidney Atlas (Heimberg et al. 2024)",
+  "artwork_theme": "The Starry Night (Vincent van Gogh, 1889)",
+  "cell_types": [
+    "Podocyte",
+    "Proximal Tubule",
+    "Loop of Henle",
+    "Distal Convoluted Tubule",
+    "Collecting Duct"
+  ],
+  "label_to_idx": {
+    "Podocyte": 0,
+    "Proximal Tubule": 1,
+    "Loop of Henle": 2,
+    "Distal Convoluted Tubule": 3,
+    "Collecting Duct": 4
+  },
+  "idx_to_label": {
+    "0": "Podocyte",
+    "1": "Proximal Tubule",
+    "2": "Loop of Henle",
+    "3": "Distal Convoluted Tubule",
+    "4": "Collecting Duct"
+  },
+  "color_map": {
+    "Podocyte": "#1e40af",
+    "Proximal Tubule": "#0284c7",
+    "Loop of Henle": "#eab308",
+    "Distal Convoluted Tubule": "#f97316",
+    "Collecting Duct": "#10b981"
+  },
+  "global_stats": {
+    "total_cells": 3000,
+    "num_cell_types": 5,
+    "concordance_rate": 89.53,
+    "rotation_noise_applied": "angle=0.15rad, sigma=0.4"
+  }
+}

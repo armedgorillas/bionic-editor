@@ -1,0 +1,12 @@
+[
+  {
+    "name": "SPEC.md",
+    "title": "SPEC: Initial Project Specification & Mock Data",
+    "path": "markdown/SPEC.md"
+  },
+  {
+    "name": "overview.md",
+    "title": "Case Study Overview & Methodology",
+    "path": "markdown/overview.md"
+  }
+]

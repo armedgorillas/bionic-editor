@@ -1,0 +1,819 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SCimilarity Cell Atlas Foundation Model - Figure 3 Benchmark</title>
+  
+  <!-- Plotly.js 2.27.0 from CDN -->
+  <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+  <!-- Marked.js for markdown-to-HTML rendering -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+  <style>
+    /* ==========================================================================
+       Art-Inspired Palette: Vincent van Gogh's "The Starry Night" (1889)
+       - Night Cobalt / Prussian Blue: #0f172a / #1a2639
+       - Swirling Celestial Blues:     #1e40af / #0284c7 / #38bdf8
+       - Crescent Moon Gold & Amber:   #f59e0b / #eab308 / #fef08a
+       - Cypress Evergreen:            #10b981 / #047857
+       - Starlight Canvas & Borders:   #f8fafc / #e2e8f0 / #cbd5e1
+       ========================================================================== */
+    :root {
+      --bg-canvas: #f8fafc;
+      --bg-surface: #ffffff;
+      --bg-sidebar: #0f172a;
+      --border-color: #e2e8f0;
+      --border-focus: #0284c7;
+      --text-main: #1e293b;
+      --text-muted: #64748b;
+      --text-inverse: #f8fafc;
+      
+      --color-primary: #1e40af;
+      --color-sky: #0284c7;
+      --color-gold: #f59e0b;
+      --color-amber: #f97316;
+      --color-cypress: #10b981;
+      
+      --shadow-sm: 0 1px 3px rgba(15, 23, 42, 0.08);
+      --shadow-md: 0 4px 6px -1px rgba(15, 23, 42, 0.1), 0 2px 4px -2px rgba(15, 23, 42, 0.06);
+      --radius: 8px;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background-color: var(--bg-canvas);
+      color: var(--text-main);
+      line-height: 1.6;
+      display: flex;
+      min-height: 100vh;
+    }
+
+    /* Sidebar Table of Contents */
+    .sidebar {
+      width: 270px;
+      background: var(--bg-sidebar);
+      color: var(--text-inverse);
+      padding: 1.75rem 1.25rem;
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow-y: auto;
+      flex-shrink: 0;
+      box-shadow: 2px 0 8px rgba(0, 0, 0, 0.15);
+      border-right: 1px solid #1e293b;
+    }
+
+    .sidebar-brand {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      margin-bottom: 1.5rem;
+      padding-bottom: 1rem;
+      border-bottom: 1px solid #334155;
+    }
+
+    .sidebar-brand h2 {
+      font-size: 1.05rem;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+      color: #f8fafc;
+    }
+
+    .sidebar-brand .palette-badge {
+      font-size: 0.7rem;
+      background: linear-gradient(135deg, #1e40af, #0284c7, #f59e0b);
+      color: white;
+      padding: 0.2rem 0.5rem;
+      border-radius: 999px;
+      text-transform: uppercase;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+    }
+
+    .sidebar-section-title {
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #94a3b8;
+      margin-bottom: 0.75rem;
+      font-weight: 700;
+    }
+
+    .toc-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+    }
+
+    .toc-item a {
+      color: #cbd5e1;
+      text-decoration: none;
+      font-size: 0.85rem;
+      display: block;
+      padding: 0.4rem 0.6rem;
+      border-radius: 4px;
+      transition: background 0.15s, color 0.15s;
+    }
+
+    .toc-item a:hover {
+      background: #1e293b;
+      color: #38bdf8;
+    }
+
+    .toc-item.toc-h3 {
+      margin-left: 0.85rem;
+      font-size: 0.8rem;
+    }
+
+    /* Main Content Area */
+    .main-wrapper {
+      flex: 1;
+      padding: 2rem 2.5rem;
+      max-width: 1400px;
+      margin: 0 auto;
+      overflow-x: hidden;
+    }
+
+    /* Header */
+    header.report-header {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius);
+      padding: 1.75rem 2rem;
+      margin-bottom: 1.75rem;
+      box-shadow: var(--shadow-sm);
+      border-left: 6px solid var(--color-primary);
+    }
+
+    header h1 {
+      font-size: 1.75rem;
+      color: #0f172a;
+      margin-bottom: 0.5rem;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+    }
+
+    .citation-box {
+      font-size: 0.95rem;
+      color: var(--text-muted);
+      border-left: 3px solid var(--color-sky);
+      padding-left: 0.85rem;
+      margin-top: 0.75rem;
+      line-height: 1.5;
+    }
+
+    .citation-box em {
+      color: #1e293b;
+      font-style: italic;
+    }
+
+    /* Alert Banner */
+    #error-banner {
+      display: none;
+      background: #fef2f2;
+      border: 1px solid #f87171;
+      color: #991b1b;
+      padding: 0.85rem 1.25rem;
+      border-radius: var(--radius);
+      margin-bottom: 1.5rem;
+    }
+
+    /* Controls Bar */
+    .controls-bar {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius);
+      padding: 1.25rem 1.75rem;
+      margin-bottom: 1.75rem;
+      box-shadow: var(--shadow-sm);
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 1.5rem;
+    }
+
+    .control-group {
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+    }
+
+    .control-group label {
+      font-size: 0.8rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      display: flex;
+      justify-content: space-between;
+      gap: 0.5rem;
+    }
+
+    .control-group input[type="range"] {
+      width: 140px;
+      accent-color: var(--color-primary);
+      cursor: pointer;
+    }
+
+    .control-group select {
+      padding: 0.45rem 0.8rem;
+      border-radius: 6px;
+      border: 1px solid var(--border-color);
+      background-color: #ffffff;
+      color: var(--text-main);
+      font-size: 0.875rem;
+      font-weight: 500;
+      outline: none;
+      min-width: 180px;
+      cursor: pointer;
+    }
+
+    .control-group select:focus {
+      border-color: var(--border-focus);
+      box-shadow: 0 0 0 2px rgba(2, 132, 199, 0.2);
+    }
+
+    .stats-summary {
+      margin-left: auto;
+      display: flex;
+      gap: 1.25rem;
+      background: #f1f5f9;
+      padding: 0.6rem 1rem;
+      border-radius: 6px;
+      border: 1px solid #e2e8f0;
+    }
+
+    .stat-badge {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    .stat-badge .stat-label {
+      font-size: 0.7rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      font-weight: 700;
+    }
+
+    .stat-badge .stat-num {
+      font-size: 1.05rem;
+      font-weight: 800;
+      color: #0f172a;
+    }
+
+    /* Grid Sections */
+    .umap-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.5rem;
+      margin-bottom: 1.75rem;
+    }
+
+    @media (max-width: 1024px) {
+      .umap-grid {
+        grid-template-columns: 1fr;
+      }
+      body {
+        flex-direction: column;
+      }
+      .sidebar {
+        width: 100%;
+        height: auto;
+        position: relative;
+      }
+    }
+
+    .card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius);
+      padding: 1.5rem;
+      box-shadow: var(--shadow-sm);
+      margin-bottom: 1.75rem;
+    }
+
+    .card-header {
+      margin-bottom: 1rem;
+      padding-bottom: 0.65rem;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    .card-header h2 {
+      font-size: 1.25rem;
+      color: #0f172a;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+    }
+
+    .card-header p {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      margin-top: 0.2rem;
+    }
+
+    .plot-container {
+      width: 100%;
+      height: 480px;
+    }
+
+    .heatmap-container {
+      width: 100%;
+      height: 520px;
+    }
+
+    /* Legend Palette Panel */
+    .palette-legend-panel {
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 6px;
+      padding: 0.85rem 1rem;
+      margin-bottom: 1rem;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 1rem;
+    }
+
+    .palette-title {
+      font-size: 0.8rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      color: #475569;
+    }
+
+    .legend-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+    }
+
+    .legend-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: #334155;
+    }
+
+    .color-swatch {
+      width: 14px;
+      height: 14px;
+      border-radius: 3px;
+      display: inline-block;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.15);
+    }
+
+    /* Table */
+    .report-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 0.5rem;
+      font-size: 0.9rem;
+    }
+
+    .report-table th, .report-table td {
+      padding: 0.85rem 1.15rem;
+      text-align: left;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    .report-table th {
+      background: #f8fafc;
+      font-weight: 700;
+      color: #334155;
+      text-transform: uppercase;
+      font-size: 0.75rem;
+      letter-spacing: 0.05em;
+    }
+
+    .report-table tbody tr:hover {
+      background-color: #f8fafc;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 0.25rem 0.65rem;
+      border-radius: 9999px;
+      font-size: 0.75rem;
+      font-weight: 700;
+    }
+
+    .badge-pass {
+      background: #dcfce7;
+      color: #15803d;
+    }
+
+    .badge-fail {
+      background: #fee2e2;
+      color: #b91c1c;
+    }
+
+    /* Document Viewer & Site Tree */
+    .doc-viewer-grid {
+      display: grid;
+      grid-template-columns: 280px 1fr;
+      gap: 1.5rem;
+      margin-top: 1rem;
+    }
+
+    @media (max-width: 900px) {
+      .doc-viewer-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .site-tree-container {
+      background: #f8fafc;
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      padding: 1rem;
+      max-height: 550px;
+      overflow-y: auto;
+    }
+
+    .site-tree-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    .site-tree-item {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.6rem 0.8rem;
+      border-radius: 6px;
+      background: #ffffff;
+      border: 1px solid #e2e8f0;
+      cursor: pointer;
+      font-size: 0.85rem;
+      font-weight: 500;
+      color: var(--text-main);
+      transition: all 0.15s ease;
+    }
+
+    .site-tree-item:hover {
+      border-color: var(--color-sky);
+      background: #f0f9ff;
+    }
+
+    .site-tree-item.active {
+      border-color: var(--color-primary);
+      background: #eff6ff;
+      font-weight: 600;
+      color: var(--color-primary);
+    }
+
+    .site-tree-item .tree-icon {
+      font-size: 1rem;
+    }
+
+    .site-tree-item .tree-title {
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .download-link {
+      font-size: 0.725rem;
+      color: var(--color-sky);
+      text-decoration: none;
+      padding: 0.2rem 0.4rem;
+      border-radius: 4px;
+      background: #e0f2fe;
+      margin-left: auto;
+    }
+
+    .download-link:hover {
+      text-decoration: underline;
+    }
+
+    .doc-viewer-container {
+      background: #ffffff;
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      padding: 1.75rem;
+      max-height: 550px;
+      overflow-y: auto;
+      font-size: 0.925rem;
+      line-height: 1.7;
+    }
+
+    .doc-viewer-container h1, 
+    .doc-viewer-container h2, 
+    .doc-viewer-container h3 {
+      color: #0f172a;
+      margin-top: 1.25rem;
+      margin-bottom: 0.6rem;
+    }
+
+    .doc-viewer-container pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 1rem;
+      border-radius: 6px;
+      overflow-x: auto;
+      margin: 1rem 0;
+      font-size: 0.85rem;
+    }
+
+    .doc-viewer-container code {
+      background: #f1f5f9;
+      color: #0f172a;
+      padding: 0.2rem 0.4rem;
+      border-radius: 4px;
+      font-size: 0.875em;
+    }
+
+    .doc-viewer-container pre code {
+      background: transparent;
+      color: inherit;
+      padding: 0;
+    }
+
+    .doc-viewer-container blockquote {
+      border-left: 4px solid var(--color-sky);
+      padding-left: 1rem;
+      color: #475569;
+      margin: 1rem 0;
+      background: #f8fafc;
+      padding-top: 0.5rem;
+      padding-bottom: 0.5rem;
+      border-radius: 0 4px 4px 0;
+    }
+
+    .doc-viewer-container ul {
+      padding-left: 1.5rem;
+      margin-bottom: 1rem;
+    }
+
+    /* Group Info */
+    .group-info-card {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.25rem;
+      background: #f8fafc;
+      padding: 1.25rem;
+      border-radius: 6px;
+      border: 1px solid var(--border-color);
+    }
+
+    .info-item {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+    }
+
+    .info-item.full-row {
+      grid-column: 1 / -1;
+    }
+
+    .info-label {
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+    }
+
+    .info-value {
+      font-size: 1rem;
+      font-weight: 600;
+      color: #0f172a;
+    }
+
+    .group-name-badge {
+      display: inline-block;
+      color: var(--color-primary);
+      font-weight: 700;
+      font-size: 1.1rem;
+    }
+
+    .members-list {
+      list-style: none;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      margin-top: 0.35rem;
+    }
+
+    .members-list li {
+      background: #ffffff;
+      border: 1px solid var(--border-color);
+      padding: 0.35rem 0.85rem;
+      border-radius: 999px;
+      font-size: 0.85rem;
+      color: #1e293b;
+    }
+
+    /* Footer */
+    footer.report-footer {
+      margin-top: 2.5rem;
+      padding: 1.75rem 2rem;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow-sm);
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      border-top: 4px solid var(--color-gold);
+    }
+
+    footer.report-footer p {
+      margin-bottom: 0.6rem;
+    }
+
+    footer.report-footer a {
+      color: var(--color-sky);
+      text-decoration: underline;
+    }
+
+    .footer-metadata {
+      margin-top: 1rem;
+      padding-top: 0.75rem;
+      border-top: 1px solid #e2e8f0;
+      font-size: 0.775rem;
+      color: #94a3b8;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1.5rem;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Sidebar: Table of Contents (Auto-generated from Page Headers) -->
+  <aside class="sidebar">
+    <div class="sidebar-brand">
+      <h2>Analysis TOC</h2>
+      <span class="palette-badge">Starry Night</span>
+    </div>
+    <div class="sidebar-section-title">Navigation</div>
+    <div id="sidebar-toc">
+      <!-- Auto-generated by generateTOC() in visualization.js -->
+    </div>
+  </aside>
+
+  <!-- Main Content Area -->
+  <div class="main-wrapper">
+    <!-- Header: title + paper citation -->
+    <header class="report-header">
+      <h1 id="sec-title">SCimilarity Foundation Model: Benchmark Report</h1>
+      <p>Interactive single-cell visualization recreating Figure 3 (Human Kidney Dataset).</p>
+      <div class="citation-box">
+        Heimberg et al. (2024). <em>"A cell atlas foundation model for scalable search of similar human cells."</em> <strong>Nature</strong> 638, 1085–1094.
+      </div>
+    </header>
+
+    <div id="error-banner"></div>
+
+    <!-- Controls Bar -->
+    <section class="controls-bar" aria-label="Interactive Plot Controls">
+      <div class="control-group">
+        <label for="pointSize">Point Size (<span id="pointSizeVal">4</span>)</label>
+        <input type="range" id="pointSize" min="1" max="10" step="0.5" value="4">
+      </div>
+
+      <div class="control-group">
+        <label for="opacity">Opacity (<span id="opacityVal">0.7</span>)</label>
+        <input type="range" id="opacity" min="0.1" max="1.0" step="0.05" value="0.7">
+      </div>
+
+      <div class="control-group">
+        <label for="highlightCellType">Highlight Cell Type</label>
+        <select id="highlightCellType">
+          <option value="">All cell types</option>
+        </select>
+      </div>
+
+      <div class="stats-summary">
+        <div class="stat-badge">
+          <span class="stat-label">Total Cells</span>
+          <span class="stat-num" id="stat-total-cells">3,000</span>
+        </div>
+        <div class="stat-badge">
+          <span class="stat-label">Cell Types</span>
+          <span class="stat-num" id="stat-num-types">5</span>
+        </div>
+        <div class="stat-badge">
+          <span class="stat-label">Concordance</span>
+          <span class="stat-num" id="stat-concordance">89.8%</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Legend Panel: Art-inspired color schema -->
+    <div class="palette-legend-panel">
+      <span class="palette-title">Palette Key:</span>
+      <div class="legend-chips">
+        <span class="legend-chip"><span class="color-swatch" style="background: #1e40af;"></span> Podocyte (Cobalt)</span>
+        <span class="legend-chip"><span class="color-swatch" style="background: #0284c7;"></span> Proximal Tubule (Sky)</span>
+        <span class="legend-chip"><span class="color-swatch" style="background: #eab308;"></span> Loop of Henle (Gold)</span>
+        <span class="legend-chip"><span class="color-swatch" style="background: #f97316;"></span> Distal Convoluted Tubule (Amber)</span>
+        <span class="legend-chip"><span class="color-swatch" style="background: #10b981;"></span> Collecting Duct (Jade)</span>
+      </div>
+    </div>
+
+    <!-- 2-column grid: Figure 3b and Figure 3c -->
+    <section class="card">
+      <div class="card-header">
+        <h2 id="sec-umap-comparison">UMAP Projections Comparison</h2>
+        <p>Comparing Ground-Truth Author Annotations against SCimilarity Foundation Model Embeddings.</p>
+      </div>
+      <div class="umap-grid">
+        <div>
+          <!-- Figure 3b: UMAP - Author Annotations -->
+          <div id="umap-author" class="plot-container"></div>
+        </div>
+        <div>
+          <!-- Figure 3c: UMAP - SCimilarity Predictions -->
+          <div id="umap-predicted" class="plot-container"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Full-width: Figure 3d: Concordance Heatmap -->
+    <section class="card">
+      <div class="card-header">
+        <h2 id="sec-concordance">Figure 3d: Concordance Heatmap</h2>
+        <p>Cross-tabulated percentage overlap between SCimilarity predicted cell types (rows) and author annotations (columns).</p>
+      </div>
+      <div id="concordance-heatmap" class="heatmap-container"></div>
+    </section>
+
+    <!-- Full-width: Scientific Validation Test Results Table -->
+    <section class="card">
+      <div class="card-header">
+        <h2 id="sec-validation">Scientific Validation Test Results</h2>
+        <p>Sanity verification comparing author label cardinalities against predicted model label cardinalities.</p>
+      </div>
+      <div id="test-results-table">
+        <!-- Rendered by renderTestResultsTable() in visualization.js -->
+      </div>
+    </section>
+
+    <!-- Full-width: Site Tree & Document Viewer -->
+    <section class="card">
+      <div class="card-header">
+        <h2 id="sec-docs">Site Tree &amp; Document Viewer</h2>
+        <p>Browse published case study specifications and documentation rendered dynamically in HTML.</p>
+      </div>
+      <div class="doc-viewer-grid">
+        <div>
+          <h3 style="font-size: 0.95rem; margin-bottom: 0.6rem; color: #334155;">Available Documents</h3>
+          <div id="site-tree" class="site-tree-container">
+            <!-- Populated by renderSiteTree() in visualization.js -->
+          </div>
+        </div>
+        <div>
+          <h3 style="font-size: 0.95rem; margin-bottom: 0.6rem; color: #334155;">Document Preview</h3>
+          <div id="doc-viewer" class="doc-viewer-container">
+            <!-- Rendered by loadAndRenderDocument() in visualization.js -->
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Full-width: Group Information -->
+    <section class="card">
+      <div class="card-header">
+        <h2 id="sec-group-info">Group Information</h2>
+        <p>Scientific consortium and project metadata.</p>
+      </div>
+      <div id="group-info">
+        <!-- Populated by renderGroupInfo() in visualization.js -->
+      </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="report-footer">
+      <p>This application was created during a Bio-IT 2026 workshop on AI Upskilling for Computational Biologists.</p>
+      <p>To see other finished products or find more information about how you can run your own workshop, visit the homepage: <a href="https://bioit26-compbio-ai-workshop.rightbionic.com/" target="_blank" rel="noopener">https://bioit26-compbio-ai-workshop.rightbionic.com/</a></p>
+      <div class="footer-metadata">
+        <span>copyright: © 2026 Sonia Timberlake &amp; Ryan Bellmore</span>
+        <span>license: Proprietary - Authorized Workshop Participants Only</span>
+        <span>distribution_allowed: false</span>
+      </div>
+    </footer>
+  </div>
+
+  <!-- Visualization Script -->
+  <script src="visualization.js"></script>
+</body>
+</html>
