@@ -171,7 +171,7 @@ app.post('/api/files/upload', upload.single('file'), (req, res) => {
   res.json({ success: true, filename: req.file.originalname });
 });
 
-// Stream raw local files (images, assets) for inline Bear WYSIWYG
+// Stream raw local files (images, assets) for inline WYSIWYG editor
 app.use('/api/files/raw', (req, res) => {
   try {
     const rawPath = req.path.replace(/^\//, '');

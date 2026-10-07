@@ -7,7 +7,7 @@ export default {
   theme: {
     extend: {
       colors: {
-        bear: {
+        editor: {
           bg: '#fcfcfc',
           sidebar: '#f7f7f8',
           text: '#2d3748',

@@ -130,7 +130,7 @@ export const HelpModal: React.FC<HelpModalProps> = ({ isOpen, onClose }) => {
                     <span className="w-5 h-5 rounded-full bg-blue-100 text-blue-700 font-bold flex items-center justify-center text-[11px]">1</span>
                     <h5 className="font-semibold text-gray-900">Define in SPEC.md</h5>
                     <p className="text-gray-500 text-[11px]">
-                      Open <code>SPEC.md</code> in the Bear editor. Write your scientific hypotheses, variables, and analysis goals in plain English.
+                      Open <code>SPEC.md</code> in the WYSIWYG editor. Write your scientific hypotheses, variables, and analysis goals in plain English.
                     </p>
                   </div>
 
@@ -185,7 +185,7 @@ export const HelpModal: React.FC<HelpModalProps> = ({ isOpen, onClose }) => {
                 <div className="p-3 bg-gray-50 border border-gray-200 rounded-lg space-y-1">
                   <div className="flex items-center space-x-2 text-gray-900 font-semibold">
                     <FileText className="w-4 h-4 text-amber-600" />
-                    <span>Bear-Style WYSIWYG Document Editor</span>
+                    <span>WYSIWYG Document Editor</span>
                   </div>
                   <p className="text-gray-600 text-[11px]">
                     Markdown files are presented in clean, proportional typography without syntax markers cluttering your screen. You can add headers, bullet lists, bold text, and inline figures like <code>![Volcano Plot](figures/volcano_plot.png)</code>. The underlying file remains pure Markdown so agents can inspect and update it.

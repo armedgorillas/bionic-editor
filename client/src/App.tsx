@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { 
   FileExplorer 
 } from './components/Explorer/FileExplorer';
-import { BearEditor } from './components/Editor/BearEditor';
+import { WysiwygEditor } from './components/Editor/WysiwygEditor';
 import { MonacoViewer } from './components/Editor/MonacoViewer';
 import { AgentPanel } from './components/Agent/AgentPanel';
 import { ReportViewer } from './components/WebReport/ReportViewer';
@@ -655,7 +655,7 @@ export const App: React.FC = () => {
             {viewMode === 'report' ? (
               <ReportViewer lastUpdated={reportLastUpdated} />
             ) : isMarkdown ? (
-              <BearEditor
+              <WysiwygEditor
                 key={activeFilePath}
                 filePath={activeFilePath}
                 initialContent={activeFileContent}

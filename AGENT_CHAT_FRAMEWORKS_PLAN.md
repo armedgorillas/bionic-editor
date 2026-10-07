@@ -12,7 +12,7 @@ As Bionic Editor expands, the AI chat interface needs more production-grade capa
 1. **Stopping Work**: Instantly interrupting LLM generation and killing active background processes (`python` / `bash` execution).
 2. **Saving & Reviewing Past Chats**: Multi-thread session management, thread history sidebar, searching past analyses, and persisting chat logs alongside project data.
 3. **Coding Harness Transparency**: Interleaved reasoning/plan cards, unabridged command outputs, error traces, and token usage accounting.
-4. **Architectural Constraints**: Must run inside our existing React frontend, match the clean Bear aesthetic, and multiplex cleanly over our **single exposed port**.
+4. **Architectural Constraints**: Must run inside our existing React frontend, match the clean distraction-free aesthetic, and multiplex cleanly over our **single exposed port**.
 
 We evaluated open-source React agent chat frameworks to determine whether to adopt an off-the-shelf library or supercharge our existing custom architecture.
 
@@ -24,9 +24,9 @@ We evaluated open-source React agent chat frameworks to determine whether to ado
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **assistant-ui** (`@assistant-ui/react`) | Modular UI Component Library (Headless + Radix) | ✅ Native `<ThreadPrimitive.Cancel />` | ✅ Built-in `ThreadList` & session drawer | ✅ Excellent via `makeAssistantToolUI` & reasoning primitives | ⭐⭐⭐⭐⭐ Ideal embedded component | Highly customizable (Tailwind / shadcn style) | **Top Framework Pick** |
 | **Vercel AI SDK** (`ai` / `@ai-sdk/react`) | Headless Hooks Primitive (`useChat`) | ✅ Built-in `stop()` method | ⚠️ Headless only (requires custom UI for thread list) | ✅ Flexible tool invocation state | ⭐⭐⭐⭐⭐ Seamless | 100% custom UI control | **Strong Foundation** |
-| **CopilotKit** (`@copilotkit/react-ui`) | Embedded Copilot Sidebar | ⚠️ Limited direct abort control | ⚠️ Basic thread support | ⚠️ Geared for app UI actions, not terminal harnesses | ⭐⭐⭐ Good, but opinionated | Heavily branded; clashes with Bear theme | Not Recommended |
+| **CopilotKit** (`@copilotkit/react-ui`) | Embedded Copilot Sidebar | ⚠️ Limited direct abort control | ⚠️ Basic thread support | ⚠️ Geared for app UI actions, not terminal harnesses | ⭐⭐⭐ Good, but opinionated | Heavily branded; clashes with minimal theme | Not Recommended |
 | **LibreChat / Chatbot UI** | Standalone Full-Stack Web App | ✅ Full support | ✅ Full multi-user DB history | ⚠️ Standalone chat, not an embedded IDE harness | ❌ Incompatible (requires separate DB & Docker ports) | ChatGPT replica UI | Not Recommended (Wrong paradigm) |
-| **Current Custom Harness** | Lightweight In-House React + SSE/WS | 🔄 Straightforward to add (`AbortController`) | 🔄 Straightforward to add (JSON sessions) | ✅ Already purpose-built for scientific tools | ⭐⭐⭐⭐⭐ Native, 0 extra deps | Perfect match with Bear design | **Strong Lightweight Alternative** |
+| **Current Custom Harness** | Lightweight In-House React + SSE/WS | 🔄 Straightforward to add (`AbortController`) | 🔄 Straightforward to add (JSON sessions) | ✅ Already purpose-built for scientific tools | ⭐⭐⭐⭐⭐ Native, 0 extra deps | Perfect match with WYSIWYG design | **Strong Lightweight Alternative** |
 
 ---
 
@@ -53,7 +53,7 @@ Our existing custom agent harness is already ~80% tailored to the requirements (
 
 #### Strengths:
 - **Zero Framework Lock-in**: Zero external chat library bloat or breaking API changes.
-- **Total Aesthetic Consistency**: Guaranteed to match the Bear minimalism and science-first UX.
+- **Total Aesthetic Consistency**: Guaranteed to match the WYSIWYG minimalism and science-first UX.
 - **Low Effort for Desired Features**:
   - **Stopping Work**: Requires a client-side `AbortController.abort()` + a backend `POST /api/agent/cancel` endpoint to kill spawned child processes (spawning `proc.kill('SIGTERM')`).
   - **Reviewing Past Chats**: Persisting sessions as `workspace/.bionic/sessions/{id}.json` files so chat histories travel with the scientific project and can be committed to Git alongside `SPEC.md`.
@@ -131,5 +131,5 @@ Retain our bespoke, clean React panel and directly implement the missing power f
 ## 6. Feedback & Decision Needed
 
 Before writing code on `feat/agent-chat-frameworks`, please review and let us know:
-1. Do you prefer **Pathway A (`assistant-ui`)** for third-party ecosystem features, or **Pathway B (Supercharged Custom)** to keep zero dependencies and direct control over the Bear aesthetic?
+1. Do you prefer **Pathway A (`assistant-ui`)** for third-party ecosystem features, or **Pathway B (Supercharged Custom)** to keep zero dependencies and direct control over the distraction-free aesthetic?
 2. Should chat histories be saved in the local browser (`localStorage`) or committed to the project filesystem (`workspace/.bionic/chats/`) so other researchers can inspect them?

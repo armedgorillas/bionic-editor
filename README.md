@@ -8,7 +8,7 @@ Bionic Editor is an IDE designed for biologists, researchers, and analytical thi
 
 ## 🌟 Key Features
 
-- **Bear-Like WYSIWYG Markdown Editor**:
+- ** WYSIWYG Markdown Editor**:
   - Clean, distraction-free document editing with proportional typography.
   - Headings, lists, bold/italics, quotes, code snippets, and links.
   - Native inline rendering for local experiment figures (e.g. `figures/volcano_plot.png` or `data/` assets).

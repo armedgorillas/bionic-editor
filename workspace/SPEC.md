@@ -18,11 +18,11 @@ Recreate the web visualization for Figure 3 from:
 
 > Heimberg et al. (2024). "A cell atlas foundation model for scalable search of similar human cells." *Nature* 638, 1085–1094.
 
-**\*\*What Figure 3 shows (kidney dataset):\*\***
+**What Figure 3 shows (kidney dataset):**
 
-\- **\*\*3b\*\***: UMAP of cells, colored by the *author's* annotation.
+\- **3b**: UMAP of cells, colored by the *author's* annotation.
 
-\- **\*\*3c\*\***: The same cells, colored by the model's *predicted* cell type.
+\- **3c**: The same cells, colored by the model's *predicted* cell type.
 
 \- **\*\*3d\*\***: A concordance heatmap. Rows = predicted types, columns = author-annotated types.
 

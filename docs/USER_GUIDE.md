@@ -1,6 +1,6 @@
 # 📘 Bionic Editor - User Guide & Scientific Documentation
 
-Bionic Editor is an IDE for analytical biologists and non-coder scientists. It provides an intuitive Bear-style document editor alongside an AI coding harness confined to an isolated Python virtual environment.
+Bionic Editor is an IDE for analytical biologists and non-coder scientists. It provides an intuitive WYSIWYG document editor alongside an AI coding harness confined to an isolated Python virtual environment.
 
 ---
 
@@ -20,7 +20,7 @@ Every analysis project in Bionic Editor is structured around reproducible data s
 
 ---
 
-## 2. Document Editing (Bear-Style WYSIWYG)
+## 2. Document Editing (WYSIWYG Editor)
 
 - **Proportional Typography**: Clean, uncluttered reading canvas with proportional fonts, natural headings, and lists.
 - **Inline Local Figures**: Reference any image locally (e.g. `![DEG Volcano Plot](figures/volcano_plot.png)`). The editor automatically resolves and renders the image inline.
