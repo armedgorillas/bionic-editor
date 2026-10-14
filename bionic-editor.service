@@ -1,0 +1,33 @@
+[Unit]
+Description=Bionic Editor Server
+Documentation=https://github.com/your-username/bioniceditor
+After=network.target
+
+[Service]
+Type=simple
+# User can be root or a dedicated user (e.g., bionic)
+# User=bionic
+# Group=bionic
+
+# Optional configuration file for workspace, port, and AI keys
+EnvironmentFile=-/etc/bionic-editor.env
+
+# Default settings (can be overridden in /etc/bionic-editor.env)
+Environment=NODE_ENV=production
+Environment=PORT=3000
+Environment=HOST=0.0.0.0
+Environment=WORKSPACE_DIR=/var/lib/bionic-editor/workspace
+
+# ExecStart command - will be updated during installation with actual paths
+ExecStart=/usr/bin/node /opt/bioniceditor/dist-server/index.js
+
+Restart=always
+RestartSec=5s
+
+# Process handling and resource limits
+LimitNOFILE=65536
+KillMode=mixed
+TimeoutStopSec=15s
+
+[Install]
+WantedBy=multi-user.target

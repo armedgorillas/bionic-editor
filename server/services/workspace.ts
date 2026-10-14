@@ -28,13 +28,13 @@ export function ensureWorkspaceDir(): void {
 export function isPathSafe(relativePath: string): boolean {
   const normalized = path.normalize(relativePath);
   const resolved = path.resolve(WORKSPACE_DIR, normalized);
-  return resolved.startsWith(WORKSPACE_DIR);
+  return resolved === WORKSPACE_DIR || resolved.startsWith(WORKSPACE_DIR + path.sep);
 }
 
 export function resolveSafePath(relativePath: string): string {
   const normalized = path.normalize(relativePath);
   const resolved = path.resolve(WORKSPACE_DIR, normalized);
-  if (!resolved.startsWith(WORKSPACE_DIR)) {
+  if (resolved !== WORKSPACE_DIR && !resolved.startsWith(WORKSPACE_DIR + path.sep)) {
     throw new Error('Access denied: Path is outside workspace');
   }
   return resolved;

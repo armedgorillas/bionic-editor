@@ -17,8 +17,14 @@ Bionic Editor is an IDE designed for biologists, researchers, and analytical thi
 - **AI Scientific Agent Harness**:
   - Operates as a collaborative coding harness confined safely to your project workspace.
   - Supports **Google Gemini** (Gemini 2.5 Flash / Pro), **OpenAI** (GPT-4o), **Anthropic** (Claude 3.5 Sonnet), **Local Ollama**, or an **Offline Scientific Demo Assistant**.
+  - **Unconstrained Turns**: No arbitrary turn limits (the previous 25-turn cap has been removed), allowing long-running, iterative scientific exploration.
   - Non-terminal conversational UI: displays natural step cards (*"Reading expression data"*, *"Executing analysis script"*, *"Updated SPEC.md"*) rather than raw CLI terminal dumps.
   - Live token tracker and running cost estimator (opencode-style).
+
+- **Arbitrary Workspace Serving & Linux Systemd Deployment**:
+  - Run from any location on a Linux server and serve any arbitrary workspace directory.
+  - Can be started via CLI (`bioniceditor /path/to/workspace`) or run as a production systemd service (`systemctl start bionic-editor`).
+  - Automated installer script: `./scripts/install-systemd.sh`.
 
 - **Default Scientific Workspace Structure**:
   - Automatically initializes a Cookiecutter Data Science layout:
@@ -99,11 +105,13 @@ Click the **⚙ (Gear)** icon in the AI Agent panel on the right:
 - Or enter your local **Ollama** endpoint (`http://localhost:11434/v1`)
 - Keys are saved locally in your browser session.
 
-### 2. Environment Variables (`.env`)
-Create a `.env` file in the root directory:
+### 2. Environment Variables (`.env` or `/etc/bionic-editor.env`)
+Create a `.env` file in the root directory (or `/etc/bionic-editor.env` for systemd):
 ```env
 PORT=3000
-WORKSPACE_DIR=./workspace
+HOST=0.0.0.0
+# Point to any arbitrary workspace folder on the server
+WORKSPACE_DIR=/path/to/any/workspace
 
 # AI Providers
 GEMINI_API_KEY=your_gemini_api_key
@@ -111,6 +119,25 @@ OPENAI_API_KEY=your_openai_api_key
 ANTHROPIC_API_KEY=your_anthropic_api_key
 OLLAMA_BASE_URL=http://localhost:11434/v1
 ```
+
+---
+
+## 🐧 Linux Server & Systemd Service Deployment
+
+To install Bionic Editor as a systemd service running in an arbitrary directory on a Linux server and serving an arbitrary workspace:
+
+```bash
+# Automated installer (builds assets, sets up systemd service, and starts it)
+sudo ./scripts/install-systemd.sh --workspace /srv/bio/experiment_01 --port 3000
+
+# Manage with systemctl
+sudo systemctl status bionic-editor
+sudo systemctl restart bionic-editor
+sudo systemctl stop bionic-editor
+sudo journalctl -u bionic-editor -f
+```
+
+See [docs/SYSTEMD_SETUP.md](docs/SYSTEMD_SETUP.md) for full instructions, multi-instance setups (`bionic-editor@.service`), and custom configurations.
 
 ---
 

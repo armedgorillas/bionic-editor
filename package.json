@@ -2,12 +2,17 @@
   "name": "bioniceditor",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
+  "main": "dist-server/index.js",
   "type": "module",
+  "bin": {
+    "bioniceditor": "./bin/bioniceditor.js",
+    "bionic-editor": "./bin/bioniceditor.js"
+  },
   "scripts": {
     "build:client": "npm --prefix client run build",
-    "build": "npm run build:client",
-    "start": "tsx server/index.ts",
+    "build:server": "tsc -p tsconfig.server.json",
+    "build": "npm run build:client && npm run build:server",
+    "start": "node dist-server/index.js",
     "dev": "tsx watch server/index.ts",
     "test": "node --test"
   },

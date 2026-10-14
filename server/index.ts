@@ -6,7 +6,7 @@ import cors from 'cors';
 import { WebSocketServer, WebSocket } from 'ws';
 import multer from 'multer';
 
-import { PORT, WORKSPACE_DIR, OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY, OLLAMA_BASE_URL, updateConfigKeys } from './config.js';
+import { PORT, HOST, WORKSPACE_DIR, PACKAGE_ROOT, OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY, OLLAMA_BASE_URL, updateConfigKeys } from './config.js';
 import {
   ensureWorkspaceDir,
   initDefaultTemplate,
@@ -25,7 +25,7 @@ import {
   runPythonScript,
   killSessionProcesses
 } from './services/venv.js';
-import { runAgentConversation, StepEvent } from './services/agent.js';
+import { runAgentConversation, StepEvent, cancelAgentSession } from './services/agent.js';
 import { initFileWatcher } from './services/fileWatcher.js';
 import { TerminalSession } from './services/terminal.js';
 import {
@@ -248,9 +248,14 @@ app.post('/api/agent/save-config', (req, res) => {
     anthropicApiKey
   });
 
-  // Write/append to .env in root so server restarts retain the keys
+  // Write/append to .env so server restarts retain the keys
   try {
-    const envPath = path.join(process.cwd(), '.env');
+    let envPath = process.env.ENV_FILE || path.join(PACKAGE_ROOT, '.env');
+    try {
+      fs.accessSync(path.dirname(envPath), fs.constants.W_OK);
+    } catch {
+      envPath = path.join(WORKSPACE_DIR, '.env');
+    }
     let envContent = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf-8') : '';
     
     if (geminiApiKey) {
@@ -331,6 +336,7 @@ app.post('/api/agent/cancel', (req, res) => {
   if (!sessionId) {
     return res.status(400).json({ error: 'sessionId is required' });
   }
+  cancelAgentSession(sessionId);
   const count = killSessionProcesses(sessionId);
   res.json({ success: true, killedCount: count });
 });
@@ -345,6 +351,7 @@ app.post('/api/agent/chat', async (req, res) => {
   const sessionId = config?.sessionId;
   req.on('close', () => {
     if (sessionId) {
+      cancelAgentSession(sessionId);
       killSessionProcesses(sessionId);
     }
   });
@@ -431,8 +438,15 @@ initFileWatcher((event, relPath) => {
   }
 });
 
-// Serve frontend static build if exists
-const clientDist = path.join(process.cwd(), 'client', 'dist');
+// Serve frontend static build
+const possibleClientDistPaths = [
+  process.env.CLIENT_DIST_DIR,
+  path.join(PACKAGE_ROOT, 'client', 'dist'),
+  path.join(process.cwd(), 'client', 'dist')
+].filter(Boolean) as string[];
+
+const clientDist = possibleClientDistPaths.find(p => fs.existsSync(p)) || path.join(PACKAGE_ROOT, 'client', 'dist');
+
 if (fs.existsSync(clientDist)) {
   app.use(express.static(clientDist));
   app.use((req, res, next) => {
@@ -441,6 +455,9 @@ if (fs.existsSync(clientDist)) {
     }
     next();
   });
+} else {
+  console.warn(`⚠️ Client frontend build not found at: ${clientDist}`);
+  console.warn(`💡 Run 'npm run build' to build the client static assets.`);
 }
 
 server.on('error', (err: any) => {
@@ -453,10 +470,11 @@ server.on('error', (err: any) => {
   }
 });
 
-server.listen(PORT, () => {
+server.listen(PORT, HOST, () => {
+  const displayHost = HOST === '0.0.0.0' ? 'localhost' : HOST;
   console.log(`\n======================================================`);
-  console.log(`🔬 Bionic Editor running at http://localhost:${PORT}`);
+  console.log(`🔬 Bionic Editor running at http://${displayHost}:${PORT}`);
   console.log(`📁 Workspace: ${WORKSPACE_DIR}`);
-  console.log(`📊 Web Report: http://localhost:${PORT}/report/`);
+  console.log(`📊 Web Report: http://${displayHost}:${PORT}/report/`);
   console.log(`======================================================\n`);
 });

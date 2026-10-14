@@ -19,6 +19,7 @@ export interface AgentConfig {
   model?: string;
   baseUrl?: string;
   sessionId?: string;
+  maxTurns?: number;
 }
 
 export interface TokenUsage {
@@ -36,6 +37,20 @@ export interface StepEvent {
   delta?: string;
   status?: 'running' | 'done' | 'error';
   tokens?: TokenUsage;
+}
+
+const cancelledSessions = new Set<string>();
+
+export function cancelAgentSession(sessionId: string): void {
+  cancelledSessions.add(sessionId);
+}
+
+export function isSessionCancelled(sessionId: string): boolean {
+  if (cancelledSessions.has(sessionId)) {
+    cancelledSessions.delete(sessionId);
+    return true;
+  }
+  return false;
 }
 
 const SYSTEM_PROMPT = `You are Bionic Editor's Scientific AI Agent—a powerful, transparent coding harness designed for analytical scientists and biologists.
@@ -393,9 +408,16 @@ async function runOpenAILoop(
 
   let turns = 0;
   let finalText = '';
-  const MAX_TURNS = 25;
+  // Removed restriction on 25 turns: runs without turn limit unless explicitly configured
+  const maxTurnsLimit = typeof config.maxTurns === 'number' && config.maxTurns > 0
+    ? config.maxTurns
+    : (process.env.MAX_TURNS ? parseInt(process.env.MAX_TURNS, 10) : Infinity);
 
-  while (turns < MAX_TURNS) {
+  while (turns < maxTurnsLimit) {
+    if (config.sessionId && isSessionCancelled(config.sessionId)) {
+      finalText = 'Execution was cancelled.';
+      break;
+    }
     turns++;
     const response = await client.chat.completions.create({
       model,
@@ -498,7 +520,9 @@ async function runOpenAILoop(
   }
 
   if (!finalText) {
-    finalText = 'Completed task steps (reached 25 turn limit). You can prompt me to continue with further analysis if needed.';
+    finalText = turns >= maxTurnsLimit
+      ? `Completed task steps (reached ${maxTurnsLimit} turn limit). You can prompt me to continue with further analysis if needed.`
+      : 'Task completed.';
     onEvent({
       type: 'final',
       delta: finalText,

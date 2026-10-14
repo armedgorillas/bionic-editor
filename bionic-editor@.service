@@ -1,0 +1,31 @@
+[Unit]
+Description=Bionic Editor Server Instance (%i)
+Documentation=https://github.com/your-username/bioniceditor
+After=network.target
+
+[Service]
+Type=simple
+# User can be root or a dedicated user (e.g., bionic)
+# User=bionic
+# Group=bionic
+
+# Instance-specific environment overrides (e.g., /etc/bionic-editor/projectA.env)
+EnvironmentFile=-/etc/bionic-editor/%i.env
+EnvironmentFile=-/etc/bionic-editor.env
+
+Environment=NODE_ENV=production
+Environment=HOST=0.0.0.0
+# Arbitrary workspace path based on instance name (%i)
+Environment=WORKSPACE_DIR=/var/lib/bionic-editor/workspaces/%i
+
+ExecStart=/usr/bin/node /opt/bioniceditor/dist-server/index.js
+
+Restart=always
+RestartSec=5s
+
+LimitNOFILE=65536
+KillMode=mixed
+TimeoutStopSec=15s
+
+[Install]
+WantedBy=multi-user.target
