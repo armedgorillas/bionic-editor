@@ -26,6 +26,7 @@
     "package": "npm run build && npm pack",
     "start": "node dist-server/index.js",
     "dev": "tsx watch server/index.ts",
+    "pretest": "npm run build",
     "test": "node --test",
     "test:client": "npm --prefix client run lint"
   },
