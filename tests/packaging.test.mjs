@@ -45,11 +45,11 @@ test('Packaging, CLI and Semantic Versioning Suite', async (t) => {
   });
 
   await t.test('Semantic versioning helper correctly parses and compares semver versions', () => {
-    const v1 = parseSemver('0.1.0-beta.1');
-    assert.deepEqual(v1, { major: 0, minor: 1, patch: 0, beta: 1 });
+    const v1 = parseSemver('1.2.3-beta.1');
+    assert.deepEqual(v1, { major: 1, minor: 2, patch: 3, beta: 1 });
 
-    const v2 = parseSemver('v0.1.0-beta.2');
-    assert.deepEqual(v2, { major: 0, minor: 1, patch: 0, beta: 2 });
+    const v2 = parseSemver('v1.2.3-beta.2');
+    assert.deepEqual(v2, { major: 1, minor: 2, patch: 3, beta: 2 });
 
     assert.ok(compareSemver(v1, v2) < 0);
     assert.ok(compareSemver(v2, v1) > 0);
@@ -57,17 +57,17 @@ test('Packaging, CLI and Semantic Versioning Suite', async (t) => {
   });
 
   await t.test('getNextVersion computes consecutive beta tags', () => {
-    // When no tags exist, uses base version in package.json
-    const initial = getNextVersion('0.1.0-beta.1', []);
-    assert.equal(initial, '0.1.0-beta.1');
+    // When no tags exist, uses base version
+    const initial = getNextVersion('1.0.0-beta.1', []);
+    assert.equal(initial, '1.0.0-beta.1');
 
     // When tags exist, increments the beta suffix
-    const nextFromTags = getNextVersion('0.1.0-beta.1', ['v0.1.0-beta.1', 'v0.1.0-beta.2']);
-    assert.equal(nextFromTags, '0.1.0-beta.3');
+    const nextFromTags = getNextVersion('1.0.0-beta.1', ['v1.0.0-beta.1', 'v1.0.0-beta.2']);
+    assert.equal(nextFromTags, '1.0.0-beta.3');
 
     // When new minor base version is specified, resets beta for that minor version
-    const nextMinor = getNextVersion('0.2.0-beta.1', ['v0.1.0-beta.1', 'v0.1.0-beta.2']);
-    assert.equal(nextMinor, '0.2.0-beta.1');
+    const nextMinor = getNextVersion('1.1.0-beta.1', ['v1.0.0-beta.1', 'v1.0.0-beta.2']);
+    assert.equal(nextMinor, '1.1.0-beta.1');
   });
 
   await t.test('npm pack includes required distribution artifacts and excludes sensitive files', () => {
