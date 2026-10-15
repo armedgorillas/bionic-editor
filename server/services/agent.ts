@@ -45,12 +45,12 @@ export function cancelAgentSession(sessionId: string): void {
   cancelledSessions.add(sessionId);
 }
 
+export function clearSessionCancellation(sessionId: string): void {
+  cancelledSessions.delete(sessionId);
+}
+
 export function isSessionCancelled(sessionId: string): boolean {
-  if (cancelledSessions.has(sessionId)) {
-    cancelledSessions.delete(sessionId);
-    return true;
-  }
-  return false;
+  return cancelledSessions.has(sessionId);
 }
 
 const SYSTEM_PROMPT = `You are Bionic Editor's Scientific AI Agent—a powerful, transparent coding harness designed for analytical scientists and biologists.
@@ -230,45 +230,55 @@ export async function runAgentConversation(
   config: AgentConfig,
   onEvent: (event: StepEvent) => void
 ): Promise<{ text: string; tokens: TokenUsage }> {
-  if (config.provider === 'demo') {
-    return handleDemoAgent(messages, onEvent);
+  if (config.sessionId) {
+    clearSessionCancellation(config.sessionId);
   }
 
-  if (config.provider === 'gemini') {
-    const key = config.apiKey || GEMINI_API_KEY;
-    if (!key) {
-      throw new Error(
-        'Google Gemini API key required. Please click the ⚙ Settings icon in the top right of the Agent panel and enter your Gemini API key.'
-      );
+  try {
+    if (config.provider === 'demo') {
+      return await handleDemoAgent(messages, onEvent);
     }
-    return handleGeminiAgent(messages, config, onEvent);
-  }
 
-  if (config.provider === 'openai') {
-    const key = config.apiKey || OPENAI_API_KEY;
-    if (!key) {
-      throw new Error(
-        'OpenAI API key required. Please click the ⚙ Settings icon in the top right of the Agent panel and enter your OpenAI API key.'
-      );
+    if (config.provider === 'gemini') {
+      const key = config.apiKey || GEMINI_API_KEY;
+      if (!key) {
+        throw new Error(
+          'Google Gemini API key required. Please click the ⚙ Settings icon in the top right of the Agent panel and enter your Gemini API key.'
+        );
+      }
+      return await handleGeminiAgent(messages, config, onEvent);
     }
-    return handleOpenAIAgent(messages, config, onEvent);
-  }
 
-  if (config.provider === 'anthropic') {
-    const key = config.apiKey || ANTHROPIC_API_KEY;
-    if (!key) {
-      throw new Error(
-        'Anthropic API key required. Please click the ⚙ Settings icon in the top right of the Agent panel and enter your Anthropic API key.'
-      );
+    if (config.provider === 'openai') {
+      const key = config.apiKey || OPENAI_API_KEY;
+      if (!key) {
+        throw new Error(
+          'OpenAI API key required. Please click the ⚙ Settings icon in the top right of the Agent panel and enter your OpenAI API key.'
+        );
+      }
+      return await handleOpenAIAgent(messages, config, onEvent);
     }
-    return handleAnthropicAgent(messages, config, onEvent);
-  }
 
-  if (config.provider === 'ollama') {
-    return handleOpenAIAgent(messages, config, onEvent);
-  }
+    if (config.provider === 'anthropic') {
+      const key = config.apiKey || ANTHROPIC_API_KEY;
+      if (!key) {
+        throw new Error(
+          'Anthropic API key required. Please click the ⚙ Settings icon in the top right of the Agent panel and enter your Anthropic API key.'
+        );
+      }
+      return await handleAnthropicAgent(messages, config, onEvent);
+    }
 
-  return handleDemoAgent(messages, onEvent);
+    if (config.provider === 'ollama') {
+      return await handleOpenAIAgent(messages, config, onEvent);
+    }
+
+    return await handleDemoAgent(messages, onEvent);
+  } finally {
+    if (config.sessionId) {
+      clearSessionCancellation(config.sessionId);
+    }
+  }
 }
 
 // Built-in Demo / Offline Agent for testing without requiring external API keys
@@ -452,7 +462,14 @@ async function runOpenAILoop(
     if (choice.message.tool_calls && choice.message.tool_calls.length > 0) {
       conversation.push(choice.message);
 
+      let wasCancelled = false;
       for (const tc of choice.message.tool_calls) {
+        if (config.sessionId && isSessionCancelled(config.sessionId)) {
+          finalText = 'Execution was cancelled.';
+          wasCancelled = true;
+          break;
+        }
+
         if (tc.type !== 'function') continue;
         const fnName = tc.function.name;
         let fnArgs: any = {};
@@ -507,6 +524,16 @@ async function runOpenAILoop(
           tool_call_id: tc.id,
           content: result.output
         });
+
+        if (config.sessionId && isSessionCancelled(config.sessionId)) {
+          finalText = 'Execution was cancelled.';
+          wasCancelled = true;
+          break;
+        }
+      }
+
+      if (wasCancelled) {
+        break;
       }
     } else {
       finalText = choice.message.content || '';
@@ -626,6 +653,10 @@ async function handleAnthropicAgent(
 
   let textOutput = '';
   for (const block of response.content) {
+    if (config.sessionId && isSessionCancelled(config.sessionId)) {
+      textOutput = 'Execution was cancelled.';
+      break;
+    }
     if (block.type === 'text') {
       textOutput += block.text;
       onEvent({
@@ -648,7 +679,7 @@ async function handleAnthropicAgent(
         status: 'running'
       });
 
-      const res = await executeToolDetailed(toolName, input);
+      const res = await executeToolDetailed(toolName, input, config.sessionId);
 
       onEvent({
         type: 'step_done',
@@ -657,6 +688,11 @@ async function handleAnthropicAgent(
         details: res.output,
         status: res.isError ? 'error' : 'done'
       });
+
+      if (config.sessionId && isSessionCancelled(config.sessionId)) {
+        textOutput = 'Execution was cancelled.';
+        break;
+      }
     }
   }
 
