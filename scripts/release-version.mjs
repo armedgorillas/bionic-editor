@@ -65,9 +65,10 @@ export function getNextVersion(customBaseVersion, existingTags = null) {
     baseVersion = pkg.version || '0.1.0-beta.1';
   }
 
-  // Allow manual override via env
-  if (process.env.RELEASE_VERSION) {
-    const clean = process.env.RELEASE_VERSION.replace(/^v/, '').trim();
+  // Allow manual override via env when no custom parameters are specified
+  const envOverride = process.env.RELEASE_VERSION_OVERRIDE || process.env.RELEASE_VERSION;
+  if (!customBaseVersion && existingTags === null && envOverride) {
+    const clean = envOverride.replace(/^v/, '').trim();
     if (parseSemver(clean)) {
       return clean;
     }
