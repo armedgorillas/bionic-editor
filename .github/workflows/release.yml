@@ -1,0 +1,102 @@
+name: Release on Merge to Main
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Semantic beta release version override (e.g. 0.1.0-beta.2)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build, Test & GitHub Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js 20.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: 'npm'
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Install client dependencies
+        run: npm --prefix client ci
+
+      - name: Run test suite
+        run: npm test
+
+      - name: Compute semantic beta release version
+        id: versioning
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            export RELEASE_VERSION="${{ github.event.inputs.version }}"
+          fi
+          NEXT_VER=$(node scripts/release-version.mjs --get-version)
+          NEXT_TAG=$(node scripts/release-version.mjs --get-tag)
+          echo "RELEASE_VERSION=${NEXT_VER}" >> $GITHUB_ENV
+          echo "RELEASE_TAG=${NEXT_TAG}" >> $GITHUB_ENV
+          echo "version=${NEXT_VER}" >> $GITHUB_OUTPUT
+          echo "tag=${NEXT_TAG}" >> $GITHUB_OUTPUT
+          echo "Prepared release: ${NEXT_TAG} (${NEXT_VER})"
+
+      - name: Bump package version
+        run: node scripts/release-version.mjs --bump
+
+      - name: Build frontend and backend distribution assets
+        run: npm run build
+
+      - name: Package release archives
+        run: |
+          mkdir -p dist-release
+
+          # 1. NPM distribution tarball
+          npm pack --pack-destination dist-release
+
+          # 2. Standalone distribution archive
+          TAR_NAME="bioniceditor-${RELEASE_VERSION}-standalone.tar.gz"
+          tar -czf "dist-release/${TAR_NAME}" \
+            package.json \
+            bin \
+            dist-server \
+            client/dist \
+            scripts/install-systemd.sh \
+            bionic-editor.service \
+            bionic-editor@.service \
+            bionic-editor.env.example \
+            README.md
+
+          # 3. Checksums
+          cd dist-release
+          sha256sum * > SHA256SUMS.txt
+          cd ..
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${RELEASE_TAG}" \
+            dist-release/* \
+            --title "Bionic Editor ${RELEASE_TAG}" \
+            --target "${{ github.sha }}" \
+            --prerelease \
+            --generate-notes

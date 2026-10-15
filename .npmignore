@@ -1,0 +1,38 @@
+# Version control & CI
+.git/
+.github/
+.vscode/
+.idea/
+
+# Environment files
+.env*
+*.env
+
+# Dependencies
+node_modules/
+client/node_modules/
+
+# Source directories not needed in production package
+client/src/
+client/public/
+server/
+tests/
+workspace/
+assets/
+docs/
+
+# Configs not needed at runtime
+tsconfig.server.json
+client/tsconfig*.json
+client/vite.config.ts
+client/postcss.config.js
+client/tailwind.config.js
+client/.oxlintrc.json
+client/index.html
+AGENT_CHAT_FRAMEWORKS_PLAN.md
+SPEC.md
+
+# Logs & OS artifacts
+*.log
+.DS_Store
+Thumbs.db

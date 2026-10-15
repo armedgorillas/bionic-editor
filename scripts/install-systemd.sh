@@ -15,6 +15,7 @@ Options:
   -u, --user USERNAME     System user to run the service as (default: current user / root)
   -e, --env-file PATH     Path to save environment configuration (default: /etc/bionic-editor.env)
   --service-name NAME     Systemd service name (default: bionic-editor)
+  --build                 Force re-building frontend and backend assets
   --no-start              Install and enable service without immediately starting it
   --help                  Show this help message
 
@@ -39,6 +40,7 @@ SERVICE_HOST="0.0.0.0"
 ENV_FILE="/etc/bionic-editor.env"
 SERVICE_NAME="bionic-editor"
 START_SERVICE=true
+FORCE_BUILD=false
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -66,6 +68,10 @@ while [[ $# -gt 0 ]]; do
     --service-name)
       SERVICE_NAME="$2"
       shift 2
+      ;;
+    --build)
+      FORCE_BUILD=true
+      shift
       ;;
     --no-start)
       START_SERVICE=false
@@ -109,15 +115,22 @@ fi
 echo "✓ Found Node.js at: ${NODE_BIN}"
 
 # Build application assets if needed
-echo "🔨 Building frontend and backend assets..."
-(
-  cd "${APP_DIR}"
-  if [ -n "$SUDO_USER" ]; then
-    sudo -u "$SUDO_USER" npm run build
-  else
-    npm run build
-  fi
-)
+CLIENT_DIST="${APP_DIR}/client/dist/index.html"
+SERVER_DIST="${APP_DIR}/dist-server/index.js"
+
+if [ "$FORCE_BUILD" = true ] || [ ! -f "$CLIENT_DIST" ] || [ ! -f "$SERVER_DIST" ]; then
+  echo "🔨 Building frontend and backend assets..."
+  (
+    cd "${APP_DIR}"
+    if [ -n "$SUDO_USER" ]; then
+      sudo -u "$SUDO_USER" npm run build
+    else
+      npm run build
+    fi
+  )
+else
+  echo "✓ Pre-built distribution assets found. Skipping build step."
+fi
 
 # Ensure workspace directory exists
 echo "📁 Ensuring arbitrary workspace directory exists: ${WORKSPACE_PATH}"

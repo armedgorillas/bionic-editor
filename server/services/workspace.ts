@@ -438,6 +438,10 @@ export function renameItem(oldRelPath: string, newRelPath: string): void {
   const oldFull = resolveSafePath(oldRelPath);
   const newFull = resolveSafePath(newRelPath);
 
+  if (oldFull === WORKSPACE_DIR || newFull === WORKSPACE_DIR) {
+    throw new Error('Access denied: Cannot rename workspace root');
+  }
+
   if (!fs.existsSync(oldFull)) {
     throw new Error(`Source not found: ${oldRelPath}`);
   }
@@ -455,6 +459,11 @@ export function renameItem(oldRelPath: string, newRelPath: string): void {
 
 export function deleteItem(relPath: string): void {
   const fullPath = resolveSafePath(relPath);
+
+  if (fullPath === WORKSPACE_DIR) {
+    throw new Error('Access denied: Cannot delete workspace root');
+  }
+
   if (!fs.existsSync(fullPath)) {
     throw new Error(`Target not found: ${relPath}`);
   }

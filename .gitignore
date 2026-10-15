@@ -23,6 +23,15 @@ workspace/.venv/
 *.log
 npm-debug.log*
 
+# Packaging and release artifacts
+*.tgz
+dist-release/
+
+# Workspace session state and cache
+workspace/.bionic/sessions/*.json
+!workspace/.bionic/sessions/.gitkeep
+.bionic/
+
 # OS artifacts
 .DS_Store
 Thumbs.db
