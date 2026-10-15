@@ -60,37 +60,76 @@ Bionic Editor is an IDE designed for biologists, researchers, and analytical thi
 
 ---
 
-## 🚀 Quick Start
+## 🚀 Quick Start & Installation
 
 ### Prerequisites
-- **Node.js**: v18+ (tested on Node v24)
+- **Node.js**: v18+ (tested on Node v20, v22, v24)
 - **Python**: 3.10+ (for data analysis and `.venv`)
 
-### Installation
+### Option A: Install Globally via NPM (Easiest)
 
-1. Clone or download the repository:
+Download the latest `.tgz` release package from GitHub Releases and install globally:
+
+```bash
+# Install globally from a GitHub Release tarball
+npm install -g https://github.com/armedgorillas/bionic-editor/releases/latest/download/bioniceditor-latest.tgz
+
+# Or install from local tarball
+npm install -g ./bioniceditor-0.1.0-beta.1.tgz
+
+# Run anywhere!
+bioniceditor /path/to/my-workspace --port 3000
+```
+
+### Option B: Standalone Release Bundle (For Linux Servers & Systemd)
+
+Download the standalone archive from GitHub Releases. Pre-built frontend and backend distributions are included:
+
+```bash
+# Download and extract standalone bundle
+tar -xzf bioniceditor-0.1.0-beta.1-standalone.tar.gz
+cd bioniceditor-0.1.0-beta.1
+
+# Install production dependencies only (no dev/build tooling required)
+npm install --omit=dev
+
+# Install and start as a Linux systemd background service
+sudo ./scripts/install-systemd.sh --workspace /srv/bio/experiment_01 --port 3000
+
+# Or start directly
+npm start
+```
+
+### Option C: Build from Source (Developers)
+
+1. Clone repository:
    ```bash
-   git clone https://github.com/your-username/bioniceditor.git
-   cd bioniceditor
+   git clone https://github.com/armedgorillas/bionic-editor.git
+   cd bionic-editor
    ```
 
-2. Install backend and frontend dependencies:
+2. Install dependencies:
    ```bash
    npm install
    npm --prefix client install
    ```
 
-3. Build the frontend client:
+3. Build the frontend and backend:
    ```bash
    npm run build
    ```
 
-4. Start the application:
+4. Run tests:
+   ```bash
+   npm test
+   ```
+
+5. Start the application:
    ```bash
    npm start
    ```
 
-5. Open your browser at **`http://localhost:3000`**.
+6. Open your browser at **`http://localhost:3000`**.
 
 ---
 

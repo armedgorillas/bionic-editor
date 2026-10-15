@@ -93,6 +93,65 @@ test('Bionic Editor End-to-End Server Suite', async (t) => {
     assert.ok(typeof body.content === 'string' && body.content.length > 0);
   });
 
+  await t.test('File CRUD endpoints support create, write, read, rename, and delete', async () => {
+    // 1. Create file
+    const createRes = await fetchUrl('/api/files/create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: { path: 'test_crud_item.txt', isDirectory: false }
+    });
+    assert.equal(createRes.status, 200);
+
+    // 2. Write file
+    const writeRes = await fetchUrl('/api/files/write', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: { path: 'test_crud_item.txt', content: 'CRUD test payload' }
+    });
+    assert.equal(writeRes.status, 200);
+
+    // 3. Read file
+    const readRes = await fetchUrl('/api/files/read?path=test_crud_item.txt');
+    assert.equal(readRes.status, 200);
+    const readBody = JSON.parse(readRes.data);
+    assert.equal(readBody.content, 'CRUD test payload');
+
+    // 4. Rename file
+    const renameRes = await fetchUrl('/api/files/rename', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: { oldPath: 'test_crud_item.txt', newPath: 'test_crud_item_renamed.txt' }
+    });
+    assert.equal(renameRes.status, 200);
+
+    // 5. Delete file
+    const deleteRes = await fetchUrl('/api/files/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: { path: 'test_crud_item_renamed.txt' }
+    });
+    assert.equal(deleteRes.status, 200);
+  });
+
+  await t.test('File API rejects path traversal attempts', async () => {
+    const readTraversal = await fetchUrl('/api/files/read?path=../../package.json');
+    assert.ok(readTraversal.status >= 400);
+
+    const writeTraversal = await fetchUrl('/api/files/write', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: { path: '../../evil.txt', content: 'hack' }
+    });
+    assert.ok(writeTraversal.status >= 400);
+
+    const deleteTraversal = await fetchUrl('/api/files/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: { path: '../../evil.txt' }
+    });
+    assert.ok(deleteTraversal.status >= 400);
+  });
+
   await t.test('AI Agent responds and outputs non-terminal step events via SSE', async () => {
     const res = await fetchUrl('/api/agent/chat', {
       method: 'POST',
