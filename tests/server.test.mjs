@@ -109,6 +109,21 @@ test('Bionic Editor End-to-End Server Suite', async (t) => {
     assert.ok(res.data.includes('final'));
   });
 
+  await t.test('AI Agent chat does not prematurely cancel when sessionId is provided', async () => {
+    const res = await fetchUrl('/api/agent/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: {
+        messages: [{ role: 'user', content: 'Please analyze the gene expression dataset.' }],
+        config: { provider: 'demo', sessionId: 'active_session_456' }
+      }
+    });
+
+    assert.equal(res.status, 200);
+    assert.ok(!res.data.includes('Execution was cancelled.'), 'Response should not indicate execution was cancelled');
+    assert.ok(res.data.includes('final'));
+  });
+
   await t.test('Agent config includes Google Gemini in available providers', async () => {
     const res = await fetchUrl('/api/agent/config');
     assert.equal(res.status, 200);

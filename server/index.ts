@@ -349,8 +349,8 @@ app.post('/api/agent/chat', async (req, res) => {
   }
 
   const sessionId = config?.sessionId;
-  req.on('close', () => {
-    if (sessionId) {
+  res.on('close', () => {
+    if (!res.writableEnded && sessionId) {
       cancelAgentSession(sessionId);
       killSessionProcesses(sessionId);
     }
