@@ -36,7 +36,7 @@ test('Packaging, CLI and Semantic Versioning Suite', async (t) => {
     assert.ok(content.includes('Business Source License 1.1'));
     assert.ok(content.includes('Change License: Apache License, Version 2.0'));
     assert.ok(content.includes('resell'));
-    assert.ok(content.includes('four (4) years following the initial public release date of that specific version'));
+    assert.ok(content.includes('fourth anniversary of the first publicly available distribution of a specific version'));
 
     // Verify rolling 4-year conversion calculation helper
     assert.equal(getChangeDate('2026-10-23'), '2030-10-23');
