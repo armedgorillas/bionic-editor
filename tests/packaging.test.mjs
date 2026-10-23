@@ -19,12 +19,23 @@ test('Packaging, CLI and Semantic Versioning Suite', async (t) => {
 
   await t.test('package.json configures bin, main, and distribution files', () => {
     assert.equal(pkg.main, 'dist-server/index.js');
+    assert.equal(pkg.license, 'BUSL-1.1');
     assert.ok(pkg.bin && pkg.bin.bioniceditor);
     assert.ok(pkg.bin['bionic-editor']);
     assert.ok(Array.isArray(pkg.files));
     assert.ok(pkg.files.includes('bin'));
     assert.ok(pkg.files.includes('dist-server'));
     assert.ok(pkg.files.includes('client/dist'));
+    assert.ok(pkg.files.includes('LICENSE'));
+  });
+
+  await t.test('LICENSE file exists and specifies Business Source License 1.1 with resale restrictions', () => {
+    const licensePath = path.join(rootDir, 'LICENSE');
+    assert.ok(fs.existsSync(licensePath), 'LICENSE file must exist in root');
+    const content = fs.readFileSync(licensePath, 'utf-8');
+    assert.ok(content.includes('Business Source License 1.1'));
+    assert.ok(content.includes('Change License: Apache License, Version 2.0'));
+    assert.ok(content.includes('resell'));
   });
 
   await t.test('CLI executable exists and has proper shebang', () => {
