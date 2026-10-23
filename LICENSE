@@ -5,16 +5,16 @@ Parameters
 Licensor: armedgorillas
 Licensed Work: Bionic Editor
 Additional Use Grant: You may make use of the Licensed Work (including in production, research, and educational environments), provided that you may not sell, resell, charge licensing fees for, or offer the software as a commercial product, paid service, or hosted SaaS offering.
-Change Date: 2030-10-23
+Change Date: For each specific version or release of the Licensed Work, the date that is four (4) years following the initial public release date of that specific version (or for unreleased source code, four (4) years following the date of initial creation).
 Change License: Apache License, Version 2.0
 
-Notice: The Business Source License 1.1 (the "License") is a source-available license that converts to an Open Source license on the Change Date.
+Notice: The Business Source License 1.1 (the "License") is a source-available license. Each release of the Licensed Work converts to an Open Source license (Apache 2.0) on its respective Change Date (four years after that release).
 
 Text of the License
 
 1. Grant of License. The Licensor hereby grants you the right to copy, modify, create derivative works, redistribute, and make non-production use of the Licensed Work. The Licensor also grants you an Additional Use Grant to make production use, or other use beyond the scope of this license, to the extent specified in the Additional Use Grant above.
 
-2. Effective Date. The terms of this License, including the Additional Use Grant, will apply to you until the Change Date. On the Change Date, the Licensor hereby grants you a permanent, worldwide, royalty-free, non-exclusive license under the Change License.
+2. Effective Date. The terms of this License, including the Additional Use Grant, will apply to you until the Change Date for each respective release of the Licensed Work. On the Change Date applicable to a given release, the Licensor hereby grants you a permanent, worldwide, royalty-free, non-exclusive license to that version under the Change License.
 
 3. Termination. This License will terminate automatically if you violate any of its terms or conditions.
 

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { parseSemver, compareSemver, getNextVersion } from '../scripts/release-version.mjs';
+import { parseSemver, compareSemver, getNextVersion, getChangeDate } from '../scripts/release-version.mjs';
 
 const rootDir = path.resolve('.');
 
@@ -29,13 +29,18 @@ test('Packaging, CLI and Semantic Versioning Suite', async (t) => {
     assert.ok(pkg.files.includes('LICENSE'));
   });
 
-  await t.test('LICENSE file exists and specifies Business Source License 1.1 with resale restrictions', () => {
+  await t.test('LICENSE file exists and specifies Business Source License 1.1 converting 4 years after each release', () => {
     const licensePath = path.join(rootDir, 'LICENSE');
     assert.ok(fs.existsSync(licensePath), 'LICENSE file must exist in root');
     const content = fs.readFileSync(licensePath, 'utf-8');
     assert.ok(content.includes('Business Source License 1.1'));
     assert.ok(content.includes('Change License: Apache License, Version 2.0'));
     assert.ok(content.includes('resell'));
+    assert.ok(content.includes('four (4) years following the initial public release date of that specific version'));
+
+    // Verify rolling 4-year conversion calculation helper
+    assert.equal(getChangeDate('2026-10-23'), '2030-10-23');
+    assert.equal(getChangeDate('2027-05-15'), '2031-05-15');
   });
 
   await t.test('CLI executable exists and has proper shebang', () => {
