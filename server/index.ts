@@ -42,6 +42,16 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
 
+// Track active HTTP sockets to mitigate and recover from socket/file descriptor limits
+const activeSockets = new Set<import('net').Socket>();
+
+server.on('connection', (socket) => {
+  activeSockets.add(socket);
+  socket.on('close', () => {
+    activeSockets.delete(socket);
+  });
+});
+
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
@@ -385,12 +395,59 @@ app.post('/api/agent/chat', async (req, res) => {
   }
 });
 
-// WebSocket management
-const activeClients = new Set<WebSocket>();
+// WebSocket management with heartbeat and socket reclamation
+interface ExtWebSocket extends WebSocket {
+  isAlive?: boolean;
+}
 
-wss.on('connection', (ws) => {
+const activeClients = new Set<ExtWebSocket>();
+
+// Heartbeat every 30s to terminate zombie / leaked sockets
+const heartbeatInterval = setInterval(() => {
+  for (const ws of activeClients) {
+    if (ws.isAlive === false) {
+      activeClients.delete(ws);
+      try {
+        ws.terminate();
+      } catch {}
+      continue;
+    }
+    ws.isAlive = false;
+    try {
+      ws.ping();
+    } catch {
+      activeClients.delete(ws);
+      try {
+        ws.terminate();
+      } catch {}
+    }
+  }
+}, 30000);
+
+heartbeatInterval.unref();
+
+wss.on('error', (err) => {
+  console.error('WebSocket server error:', err);
+});
+
+wss.on('connection', (rawWs) => {
+  const ws = rawWs as ExtWebSocket;
+  ws.isAlive = true;
   activeClients.add(ws);
   let terminalSession: TerminalSession | null = null;
+
+  ws.on('pong', () => {
+    ws.isAlive = true;
+  });
+
+  ws.on('error', (err) => {
+    console.error('WebSocket client error:', err);
+    activeClients.delete(ws);
+    if (terminalSession) {
+      terminalSession.kill();
+      terminalSession = null;
+    }
+  });
 
   ws.on('message', (message) => {
     try {
@@ -433,7 +490,13 @@ initFileWatcher((event, relPath) => {
 
   for (const client of activeClients) {
     if (client.readyState === WebSocket.OPEN) {
-      client.send(payload);
+      try {
+        client.send(payload);
+      } catch {
+        activeClients.delete(client);
+      }
+    } else if (client.readyState === WebSocket.CLOSED || client.readyState === WebSocket.CLOSING) {
+      activeClients.delete(client);
     }
   }
 });
@@ -465,6 +528,33 @@ server.on('error', (err: any) => {
     console.error(`\n❌ Error: Port ${PORT} is already in use by another process.`);
     console.error(`💡 To free port ${PORT}, run: fuser -k ${PORT}/tcp (or set PORT=${PORT + 1})\n`);
     process.exit(1);
+  } else if (
+    err.code === 'EMFILE' ||
+    err.code === 'ENFILE' ||
+    err.syscall === 'accept' ||
+    String(err.message).toLowerCase().includes('too many') ||
+    String(err.message).toLowerCase().includes('emfile')
+  ) {
+    console.error(`\n⚠️ Sockets / File descriptor limit encountered: ${err.message || err.code}`);
+    console.error('💡 Reclaiming idle sockets and purging disconnected clients...\n');
+
+    // Purge non-open or unresponsive WebSocket clients
+    for (const client of activeClients) {
+      if (client.readyState !== WebSocket.OPEN) {
+        activeClients.delete(client);
+        try {
+          client.terminate();
+        } catch {}
+      }
+    }
+
+    // Clean up idle HTTP sockets
+    for (const socket of activeSockets) {
+      try {
+        socket.destroy();
+      } catch {}
+    }
+    activeSockets.clear();
   } else {
     console.error('Server error:', err);
   }

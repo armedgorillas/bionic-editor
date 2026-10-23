@@ -104,6 +104,12 @@ export function getNextVersion(customBaseVersion, existingTags = null) {
   return `${basePrefix}-beta.${nextBeta}`;
 }
 
+export function getChangeDate(releaseDate = new Date()) {
+  const d = new Date(releaseDate);
+  d.setFullYear(d.getFullYear() + 4);
+  return d.toISOString().split('T')[0];
+}
+
 // CLI Execution
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const args = process.argv.slice(2);

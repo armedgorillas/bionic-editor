@@ -36,10 +36,26 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ onClose }) => {
       }
     };
 
+    ws.onerror = (err) => {
+      console.warn('Terminal socket warning:', err);
+    };
+
     return () => {
       if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'terminal_stop' }));
+        try {
+          ws.send(JSON.stringify({ type: 'terminal_stop' }));
+        } catch {}
         ws.close();
+      } else if (ws.readyState === WebSocket.CONNECTING) {
+        ws.onopen = () => {
+          try {
+            ws.send(JSON.stringify({ type: 'terminal_stop' }));
+          } catch {}
+          ws.close();
+        };
+        try {
+          ws.close();
+        } catch {}
       }
     };
   }, []);

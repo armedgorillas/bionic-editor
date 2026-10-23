@@ -203,4 +203,9 @@ The test suite validates:
 ---
 
 ## 📄 License
-MIT License.
+
+This software is licensed under the [Business Source License 1.1 (BSL 1.1)](LICENSE).
+
+- **Free to Use**: You are free to copy, modify, distribute, and use the software in production, research, and educational environments.
+- **Resale Restriction**: You may not sell, resell, charge licensing fees for, or offer the software as a paid service, commercial product, or hosted SaaS offering.
+- **Conversion to Open Source**: For each release of the software, that specific version automatically converts to the [Apache License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0) four (4) years after its initial public release date.

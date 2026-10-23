@@ -2,6 +2,7 @@
   "name": "bioniceditor",
   "version": "0.1.0-beta.1",
   "description": "Scientific Document & Analysis IDE for Analytical Scientists",
+  "license": "BUSL-1.1",
   "main": "dist-server/index.js",
   "type": "module",
   "bin": {
@@ -16,7 +17,8 @@
     "bionic-editor.service",
     "bionic-editor@.service",
     "bionic-editor.env.example",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "scripts": {
     "build:client": "npm --prefix client run build",

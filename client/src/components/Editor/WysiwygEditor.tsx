@@ -5,6 +5,7 @@ import { Markdown } from 'tiptap-markdown';
 import Image from '@tiptap/extension-image';
 import Link from '@tiptap/extension-link';
 import Placeholder from '@tiptap/extension-placeholder';
+import { TableKit } from '@tiptap/extension-table';
 import {
   Bold,
   Italic,
@@ -17,6 +18,7 @@ import {
   Code,
   Link as LinkIcon,
   Image as ImageIcon,
+  Table as TableIcon,
   CheckCircle2,
   Clock,
   Code2
@@ -92,6 +94,11 @@ export const WysiwygEditor: React.FC<WysiwygEditorProps> = ({
       }),
       Placeholder.configure({
         placeholder: 'Write your scientific experiment notes or instructions...'
+      }),
+      TableKit.configure({
+        table: {
+          resizable: true
+        }
       }),
       Markdown.configure({
         html: true,
@@ -271,6 +278,53 @@ export const WysiwygEditor: React.FC<WysiwygEditorProps> = ({
           >
             <ImageIcon className="w-4 h-4" />
           </button>
+          <button
+            onClick={() => (editor.chain().focus() as any).insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()}
+            className={`p-1.5 rounded hover:bg-gray-100 ${editor.isActive('table') ? 'bg-gray-200 text-gray-900 font-bold' : ''}`}
+            title="Insert Table (3x3)"
+          >
+            <TableIcon className="w-4 h-4" />
+          </button>
+
+          {editor.isActive('table') && (
+            <div className="flex items-center space-x-1 pl-1 ml-1 border-l border-gray-200">
+              <button
+                onClick={() => (editor.chain().focus() as any).addRowAfter().run()}
+                className="px-1.5 py-0.5 text-[11px] rounded bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium cursor-pointer"
+                title="Add Row Below"
+              >
+                + Row
+              </button>
+              <button
+                onClick={() => (editor.chain().focus() as any).addColumnAfter().run()}
+                className="px-1.5 py-0.5 text-[11px] rounded bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium cursor-pointer"
+                title="Add Column Right"
+              >
+                + Col
+              </button>
+              <button
+                onClick={() => (editor.chain().focus() as any).deleteRow().run()}
+                className="px-1.5 py-0.5 text-[11px] rounded bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium cursor-pointer"
+                title="Delete Current Row"
+              >
+                - Row
+              </button>
+              <button
+                onClick={() => (editor.chain().focus() as any).deleteColumn().run()}
+                className="px-1.5 py-0.5 text-[11px] rounded bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium cursor-pointer"
+                title="Delete Current Column"
+              >
+                - Col
+              </button>
+              <button
+                onClick={() => (editor.chain().focus() as any).deleteTable().run()}
+                className="px-1.5 py-0.5 text-[11px] rounded bg-red-50 hover:bg-red-100 text-red-600 font-medium cursor-pointer"
+                title="Delete Table"
+              >
+                Del Table
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Right side: Save indicator & Raw Markdown toggle */}

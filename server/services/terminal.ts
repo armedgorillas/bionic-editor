@@ -45,6 +45,7 @@ export class TerminalSession {
     });
 
     this.proc.on('close', (code) => {
+      this.proc = null;
       if (this.ws.readyState === WebSocket.OPEN) {
         this.ws.send(JSON.stringify({
           type: 'terminal_exit',
@@ -52,17 +53,31 @@ export class TerminalSession {
         }));
       }
     });
+
+    this.proc.on('error', (err) => {
+      console.error('Terminal session process error:', err);
+      this.kill();
+    });
   }
 
   public handleInput(data: string) {
     if (this.proc && this.proc.stdin && !this.proc.killed) {
-      this.proc.stdin.write(data);
+      try {
+        this.proc.stdin.write(data);
+      } catch (err) {
+        console.error('Terminal stdin write error:', err);
+      }
     }
   }
 
   public kill() {
     if (this.proc) {
-      this.proc.kill();
+      try {
+        this.proc.stdout?.destroy();
+        this.proc.stderr?.destroy();
+        this.proc.stdin?.destroy();
+        this.proc.kill('SIGTERM');
+      } catch {}
       this.proc = null;
     }
   }
