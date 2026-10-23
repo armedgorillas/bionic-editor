@@ -20,6 +20,7 @@ import {
   X
 } from 'lucide-react';
 import type { ChatMessage, TokenUsage, ChatSessionSummary } from '../../types';
+import { MarkdownMessage } from './MarkdownMessage';
 
 interface AgentPanelProps {
   messages: ChatMessage[];
@@ -321,8 +322,8 @@ export const AgentPanel: React.FC<AgentPanelProps> = ({
                               <Sparkles className="w-3 h-3" />
                               <span>Agent Plan &amp; Logic</span>
                             </div>
-                            <div className="whitespace-pre-wrap leading-relaxed text-gray-800 font-sans">
-                              {item.content}
+                            <div className="leading-relaxed text-gray-800 font-sans">
+                              <MarkdownMessage content={item.content} compact />
                             </div>
                           </div>
                         );
@@ -428,8 +429,8 @@ export const AgentPanel: React.FC<AgentPanelProps> = ({
                           <Sparkles className="w-3 h-3" />
                           <span>Agent Plan &amp; Logic</span>
                         </div>
-                        <div className="whitespace-pre-wrap leading-relaxed text-gray-800 font-sans">
-                          {th}
+                        <div className="leading-relaxed text-gray-800 font-sans">
+                          <MarkdownMessage content={th} compact />
                         </div>
                       </div>
                     ))}
@@ -438,10 +439,8 @@ export const AgentPanel: React.FC<AgentPanelProps> = ({
 
                 {/* Final Formatted Narrative Text */}
                 {msg.content && (
-                  <div className="bg-white border border-gray-200/80 rounded-2xl rounded-tl-sm px-3.5 py-2.5 text-gray-800 leading-relaxed shadow-sm space-y-1.5">
-                    {msg.content.split('\n\n').map((paragraph, idx) => (
-                      <p key={idx} className="whitespace-pre-wrap">{paragraph}</p>
-                    ))}
+                  <div className="bg-white border border-gray-200/80 rounded-2xl rounded-tl-sm px-3.5 py-2.5 text-gray-800 leading-relaxed shadow-sm">
+                    <MarkdownMessage content={msg.content} />
                   </div>
                 )}
               </div>

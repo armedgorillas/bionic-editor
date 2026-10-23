@@ -167,35 +167,67 @@ export const App: React.FC = () => {
   }, [loadWorkspace, handleSelectFile]);
 
   // WebSocket for file changes
+  const activeFilePathRef = useRef(activeFilePath);
   useEffect(() => {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+    activeFilePathRef.current = activeFilePath;
+  }, [activeFilePath]);
 
-    ws.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data);
-        if (msg.type === 'file_changed') {
-          loadWorkspace();
-          // If active file changed externally, reload it
-          if (msg.path === activeFilePath) {
-            readFile(activeFilePath).then(data => {
-              setActiveFileContent(data.content);
-            });
+  useEffect(() => {
+    let ws: WebSocket | null = null;
+    let reconnectTimer: any = null;
+    let isDisposed = false;
+
+    const connect = () => {
+      if (isDisposed) return;
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === 'file_changed') {
+            loadWorkspace();
+            // If active file changed externally, reload it
+            if (msg.path === activeFilePathRef.current) {
+              readFile(activeFilePathRef.current).then(data => {
+                setActiveFileContent(data.content);
+              });
+            }
+            // If web report updated, trigger refresh
+            if (msg.path?.startsWith('web-report')) {
+              setReportLastUpdated(Date.now());
+            }
           }
-          // If web report updated, trigger refresh
-          if (msg.path?.startsWith('web-report')) {
-            setReportLastUpdated(Date.now());
-          }
+        } catch {
+          // ignore
         }
-      } catch {
-        // ignore
-      }
+      };
+
+      ws.onclose = () => {
+        if (!isDisposed) {
+          reconnectTimer = setTimeout(connect, 3000);
+        }
+      };
+
+      ws.onerror = () => {
+        try {
+          ws?.close();
+        } catch {}
+      };
     };
+
+    connect();
 
     return () => {
-      ws.close();
+      isDisposed = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (ws) {
+        try {
+          ws.close();
+        } catch {}
+      }
     };
-  }, [activeFilePath, loadWorkspace]);
+  }, [loadWorkspace]);
 
   // Save active file
   const handleSaveFile = async (path: string, content: string) => {

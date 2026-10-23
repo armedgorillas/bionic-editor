@@ -37,5 +37,17 @@ export function initFileWatcher(onFileChange: FileChangeCallback): void {
     .on('change', handle('change'))
     .on('unlink', handle('unlink'))
     .on('addDir', handle('addDir'))
-    .on('unlinkDir', handle('unlinkDir'));
+    .on('unlinkDir', handle('unlinkDir'))
+    .on('error', (err: any) => {
+      console.warn('File watcher warning:', err?.message || err);
+    });
+}
+
+export function closeFileWatcher(): void {
+  if (watcher) {
+    try {
+      watcher.close();
+    } catch {}
+    watcher = null;
+  }
 }
