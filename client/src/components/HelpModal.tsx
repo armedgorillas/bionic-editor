@@ -228,9 +228,9 @@ export const HelpModal: React.FC<HelpModalProps> = ({ isOpen, onClose }) => {
           {activeTab === 'agent' && (
             <div className="space-y-4">
               <div>
-                <h3 className="font-semibold text-gray-900 mb-1">AI Scientific Agent &amp; Coding Harness</h3>
+                <h3 className="font-semibold text-gray-900 mb-1">AI Scientific Agent &amp; OpenCode Engine</h3>
                 <p className="text-gray-600">
-                  The AI Agent acts as your computational research assistant. It can read datasets, write Python scripts, run commands, and generate reports.
+                  The AI Agent is powered under the hood by <strong>OpenCode</strong> (<a href="https://opencode.ai" target="_blank" rel="noreferrer" className="text-blue-600 underline">opencode.ai</a>). It provides state-of-the-art coding harness capabilities—persistent multi-turn context, surgical code patching, file search, and isolated virtual environment execution.
                 </p>
               </div>
 

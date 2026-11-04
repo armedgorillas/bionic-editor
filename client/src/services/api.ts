@@ -1,6 +1,15 @@
 import type { FileItem, WorkspaceInfo, VenvStatus } from '../types';
 
-export const API_BASE = '/api';
+export function getBionicConfig(): { baseUrl: string; baseSpec: string } {
+  if (typeof window !== 'undefined' && (window as any).__BIONIC_CONFIG__) {
+    return (window as any).__BIONIC_CONFIG__;
+  }
+  return { baseUrl: '', baseSpec: 'SPEC.md' };
+}
+
+export const BASE_URL = getBionicConfig().baseUrl;
+export const BASE_SPEC = getBionicConfig().baseSpec;
+export const API_BASE = `${BASE_URL}/api`;
 
 export async function fetchWorkspaceInfo(): Promise<WorkspaceInfo> {
   const res = await fetch(`${API_BASE}/workspace/info`);

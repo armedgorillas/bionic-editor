@@ -14,12 +14,13 @@ Bionic Editor is an IDE designed for biologists, researchers, and analytical thi
   - Native inline rendering for local experiment figures (e.g. `figures/volcano_plot.png` or `data/` assets).
   - Lossless bidirectional synchronization with raw Markdown so AI agents and git diffs remain pristine.
 
-- **AI Scientific Agent Harness**:
-  - Operates as a collaborative coding harness confined safely to your project workspace.
-  - Supports **Google Gemini** (Gemini 2.5 Flash / Pro), **OpenAI** (GPT-4o), **Anthropic** (Claude 3.5 Sonnet), **Local Ollama**, or an **Offline Scientific Demo Assistant**.
+- **AI Scientific Agent Harness (Powered by OpenCode)**:
+  - Operates as a collaborative coding harness running **OpenCode** under the hood, confined safely to your project workspace.
+  - Leverages OpenCode's advanced multi-turn session persistence, surgical file editing (`edit`), pattern search (`grep`), and directory scanning (`glob`) so the agent never needlessly re-reads files.
+  - Supports **Google Gemini** (Gemini 3.8 Flash / Pro), **OpenAI** (GPT-4o), **Anthropic** (Claude 3.5 Sonnet), **Local Ollama**, or an **Offline Scientific Demo Assistant**.
   - **Unconstrained Turns**: No arbitrary turn limits (the previous 25-turn cap has been removed), allowing long-running, iterative scientific exploration.
   - Non-terminal conversational UI: displays natural step cards (*"Reading expression data"*, *"Executing analysis script"*, *"Updated SPEC.md"*) rather than raw CLI terminal dumps.
-  - Live token tracker and running cost estimator (opencode-style).
+  - Live token tracker and running cost estimator.
 
 - **Arbitrary Workspace Serving & Linux Systemd Deployment**:
   - Run from any location on a Linux server and serve any arbitrary workspace directory.
@@ -64,7 +65,14 @@ Bionic Editor is an IDE designed for biologists, researchers, and analytical thi
 
 ### Prerequisites
 - **Node.js**: v18+ (tested on Node v20, v22, v24)
-- **Python**: 3.10+ (for data analysis and `.venv`)
+- **Python**: 3.10+ (for data analysis and workspace `.venv`)
+- **OpenCode** (Recommended): Powers the AI agent coding harness under the hood. Install via:
+  ```bash
+  curl -fsSL https://opencode.ai/install | bash
+  # Or via npm:
+  npm install -g opencode
+  ```
+  *(If OpenCode is not installed, Bionic Editor falls back gracefully to its built-in runner or offline demo mode).*
 
 ### Option A: Install Globally via NPM (Easiest)
 

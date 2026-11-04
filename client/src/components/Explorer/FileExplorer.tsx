@@ -18,6 +18,7 @@ import {
   LayoutDashboard
 } from 'lucide-react';
 import type { FileItem } from '../../types';
+import { getBionicConfig } from '../../services/api';
 
 interface FileExplorerProps {
   tree: FileItem[];
@@ -95,8 +96,10 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
     }
   };
 
+  const baseSpec = getBionicConfig().baseSpec || 'SPEC.md';
+
   const getFileIcon = (item: FileItem) => {
-    if (item.name === 'SPEC.md') {
+    if (item.name === baseSpec || item.name === 'SPEC.md') {
       return <Sparkles className="w-4 h-4 text-amber-500 mr-2 flex-shrink-0" />;
     }
     const ext = item.extension?.toLowerCase();
@@ -211,7 +214,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
                 onClick={(e) => e.stopPropagation()}
               />
             ) : (
-              <span className={`truncate ${item.name === 'SPEC.md' ? 'font-semibold text-amber-900' : ''}`}>
+              <span className={`truncate ${(item.name === baseSpec || item.name === 'SPEC.md') ? 'font-semibold text-amber-900' : ''}`}>
                 {item.name}
               </span>
             )}
@@ -285,16 +288,16 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
       {/* Quick Launch Buttons for Scientists */}
       <div className="p-2 border-b border-gray-100 bg-white/60 space-y-1">
         <button
-          onClick={() => onSelectFile('SPEC.md')}
+          onClick={() => onSelectFile(baseSpec)}
           className={`w-full text-left px-2 py-1.5 rounded flex items-center justify-between text-xs font-medium transition ${
-            activeFilePath === 'SPEC.md' 
+            activeFilePath === baseSpec 
               ? 'bg-amber-100 text-amber-900 border border-amber-300' 
               : 'hover:bg-amber-50 text-gray-700'
           }`}
         >
           <div className="flex items-center">
             <Sparkles className="w-3.5 h-3.5 text-amber-600 mr-2" />
-            <span>SPEC.md (Analysis Plan)</span>
+            <span>{baseSpec} (Analysis Plan)</span>
           </div>
           <span className="text-[10px] bg-amber-200/60 text-amber-800 px-1.5 rounded">Core</span>
         </button>

@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { spawn } from 'child_process';
-import { WORKSPACE_DIR } from '../config.js';
+import { WORKSPACE_DIR, getTargetSpawnOptions } from '../config.js';
 import { resolveSafePath } from './workspace.js';
 
 export interface VenvStatus {
@@ -51,8 +51,10 @@ export function getVenvStatus(): VenvStatus {
 
 export function createVenv(): Promise<{ success: boolean; output: string }> {
   return new Promise((resolve) => {
+    const spawnOpts = getTargetSpawnOptions();
     const proc = spawn('python3', ['-m', 'venv', '.venv'], {
-      cwd: WORKSPACE_DIR
+      cwd: WORKSPACE_DIR,
+      ...spawnOpts
     });
 
     let output = '';
@@ -81,8 +83,10 @@ export function installRequirements(): Promise<{ success: boolean; output: strin
       return resolve({ success: false, output: 'requirements.txt not found in workspace' });
     }
 
+    const spawnOpts = getTargetSpawnOptions();
     const proc = spawn(pipPath, ['install', '-r', 'requirements.txt'], {
-      cwd: WORKSPACE_DIR
+      cwd: WORKSPACE_DIR,
+      ...spawnOpts
     });
 
     let output = '';
@@ -140,15 +144,14 @@ export function runPythonScript(
     const pythonPath = getVenvPythonPath();
     const fullScriptPath = resolveSafePath(scriptRelPath);
 
-    const env = {
-      ...process.env,
+    const spawnOpts = getTargetSpawnOptions({
       PATH: `${path.join(WORKSPACE_DIR, '.venv', 'bin')}:${process.env.PATH}`,
       PYTHONUNBUFFERED: '1'
-    };
+    });
 
     const proc = spawn(pythonPath, [fullScriptPath, ...args], {
       cwd: WORKSPACE_DIR,
-      env
+      ...spawnOpts
     });
 
     const unregister = sessionId ? registerSessionProcess(sessionId, proc) : null;
@@ -196,14 +199,13 @@ export function runBashCommand(
   sessionId?: string
 ): Promise<{ success: boolean; code: number; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
-    const env = {
-      ...process.env,
+    const spawnOpts = getTargetSpawnOptions({
       PATH: `${path.join(WORKSPACE_DIR, '.venv', 'bin')}:${process.env.PATH}`
-    };
+    });
 
     const proc = spawn('/bin/bash', ['-c', cmd], {
       cwd: WORKSPACE_DIR,
-      env
+      ...spawnOpts
     });
 
     const unregister = sessionId ? registerSessionProcess(sessionId, proc) : null;

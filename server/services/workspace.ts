@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { WORKSPACE_DIR } from '../config.js';
+import { WORKSPACE_DIR, BASE_SPEC, TARGET_USER } from '../config.js';
 
 export interface FileItem {
   name: string;
@@ -40,6 +40,16 @@ export function resolveSafePath(relativePath: string): string {
   return resolved;
 }
 
+export function applyTargetOwnership(targetPath: string): void {
+  if (typeof process.getuid === 'function' && process.getuid() === 0) {
+    if (TARGET_USER.uid !== undefined && TARGET_USER.uid !== 0) {
+      try {
+        fs.chownSync(targetPath, TARGET_USER.uid, TARGET_USER.gid ?? TARGET_USER.uid);
+      } catch {}
+    }
+  }
+}
+
 export function initDefaultTemplate(): void {
   const dirs = [
     'data/raw',
@@ -53,6 +63,7 @@ export function initDefaultTemplate(): void {
     const full = path.join(WORKSPACE_DIR, d);
     if (!fs.existsSync(full)) {
       fs.mkdirSync(full, { recursive: true });
+      applyTargetOwnership(full);
     }
   });
 
@@ -83,9 +94,10 @@ Instruct the AI assistant to perform the following steps:
 - Visual summary in \`web-report/\`
 `;
 
-  const specPath = path.join(WORKSPACE_DIR, 'SPEC.md');
+  const specPath = path.join(WORKSPACE_DIR, BASE_SPEC);
   if (!fs.existsSync(specPath)) {
     fs.writeFileSync(specPath, specContent, 'utf-8');
+    applyTargetOwnership(specPath);
   }
 
   const sampleCsv = `gene_id,gene_symbol,ctrl_rep1,ctrl_rep2,treat_rep1,treat_rep2
@@ -103,6 +115,7 @@ ENSG00000157764,BRAF,320.1,315.0,810.5,795.3
   const csvPath = path.join(WORKSPACE_DIR, 'data/raw/gene_expression_sample.csv');
   if (!fs.existsSync(csvPath)) {
     fs.writeFileSync(csvPath, sampleCsv, 'utf-8');
+    applyTargetOwnership(csvPath);
   }
 
   const analyzePy = `"""
@@ -141,6 +154,7 @@ if __name__ == "__main__":
   const pyPath = path.join(WORKSPACE_DIR, 'src/analyze.py');
   if (!fs.existsSync(pyPath)) {
     fs.writeFileSync(pyPath, analyzePy, 'utf-8');
+    applyTargetOwnership(pyPath);
   }
 
   const reportHtml = `<!DOCTYPE html>
@@ -308,6 +322,7 @@ if __name__ == "__main__":
   const reportPath = path.join(WORKSPACE_DIR, 'web-report/index.html');
   if (!fs.existsSync(reportPath)) {
     fs.writeFileSync(reportPath, reportHtml, 'utf-8');
+    applyTargetOwnership(reportPath);
   }
 
   const reqTxt = `pandas>=2.0.0
@@ -318,6 +333,7 @@ scipy>=1.10.0
   const reqPath = path.join(WORKSPACE_DIR, 'requirements.txt');
   if (!fs.existsSync(reqPath)) {
     fs.writeFileSync(reqPath, reqTxt, 'utf-8');
+    applyTargetOwnership(reqPath);
   }
 
   const gitignore = `.venv/
@@ -329,6 +345,7 @@ __pycache__/
   const gitignorePath = path.join(WORKSPACE_DIR, '.gitignore');
   if (!fs.existsSync(gitignorePath)) {
     fs.writeFileSync(gitignorePath, gitignore, 'utf-8');
+    applyTargetOwnership(gitignorePath);
   }
 }
 
@@ -413,8 +430,10 @@ export function writeFileContent(relPath: string, content: string): void {
   const dir = path.dirname(fullPath);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
+    applyTargetOwnership(dir);
   }
   fs.writeFileSync(fullPath, content, 'utf-8');
+  applyTargetOwnership(fullPath);
 }
 
 export function createItem(relPath: string, isDirectory: boolean): void {
@@ -425,12 +444,15 @@ export function createItem(relPath: string, isDirectory: boolean): void {
 
   if (isDirectory) {
     fs.mkdirSync(fullPath, { recursive: true });
+    applyTargetOwnership(fullPath);
   } else {
     const parent = path.dirname(fullPath);
     if (!fs.existsSync(parent)) {
       fs.mkdirSync(parent, { recursive: true });
+      applyTargetOwnership(parent);
     }
     fs.writeFileSync(fullPath, '', 'utf-8');
+    applyTargetOwnership(fullPath);
   }
 }
 
@@ -452,9 +474,19 @@ export function renameItem(oldRelPath: string, newRelPath: string): void {
   const newParent = path.dirname(newFull);
   if (!fs.existsSync(newParent)) {
     fs.mkdirSync(newParent, { recursive: true });
+    applyTargetOwnership(newParent);
   }
 
   fs.renameSync(oldFull, newFull);
+  applyTargetOwnership(newFull);
+  try {
+    const st = fs.statSync(newFull);
+    if (st.isDirectory()) {
+      fs.chmodSync(newFull, 0o775);
+    } else {
+      fs.chmodSync(newFull, 0o664);
+    }
+  } catch {}
 }
 
 export function deleteItem(relPath: string): void {

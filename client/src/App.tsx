@@ -35,7 +35,8 @@ import {
   fetchChatSession,
   saveChatSession,
   deleteChatSession,
-  cancelAgentExecution
+  cancelAgentExecution,
+  getBionicConfig
 } from './services/api';
 import { 
   Code, 
@@ -50,8 +51,10 @@ import {
 } from 'lucide-react';
 
 export const App: React.FC = () => {
+  const bionicConfig = getBionicConfig();
+  const defaultSpec = bionicConfig.baseSpec || 'SPEC.md';
   const [fileTree, setFileTree] = useState<FileItem[]>([]);
-  const [activeFilePath, setActiveFilePath] = useState<string>('SPEC.md');
+  const [activeFilePath, setActiveFilePath] = useState<string>(defaultSpec);
   const [activeFileContent, setActiveFileContent] = useState<string>('');
   const [viewMode, setViewMode] = useState<'editor' | 'report'>('editor');
   
@@ -107,7 +110,7 @@ export const App: React.FC = () => {
     {
       id: 'welcome',
       role: 'assistant',
-      content: `Welcome to **Bionic Editor**! 🔬\n\nI am your scientific AI assistant. You can write your experimental specifications and hypotheses in **SPEC.md** on the left, and describe what data analyses to perform. I will write and run Python scripts in your isolated virtual environment and render interactive charts in the **Web Report** panel.`,
+      content: `Welcome to **Bionic Editor**! 🔬\n\nI am your scientific AI assistant. You can write your experimental specifications and hypotheses in **${defaultSpec}** on the left, and describe what data analyses to perform. I will write and run Python scripts in your isolated virtual environment and render interactive charts in the **Web Report** panel.`,
       timestamp: Date.now()
     }
   ]);
@@ -162,9 +165,9 @@ export const App: React.FC = () => {
   // Initial load
   useEffect(() => {
     loadWorkspace().then(() => {
-      handleSelectFile('SPEC.md');
+      handleSelectFile(defaultSpec);
     });
-  }, [loadWorkspace, handleSelectFile]);
+  }, [loadWorkspace, handleSelectFile, defaultSpec]);
 
   // WebSocket for file changes
   const activeFilePathRef = useRef(activeFilePath);
@@ -180,7 +183,8 @@ export const App: React.FC = () => {
     const connect = () => {
       if (isDisposed) return;
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+      const wsUrl = `${protocol}//${window.location.host}${bionicConfig.baseUrl}/ws`;
+      ws = new WebSocket(wsUrl);
 
       ws.onmessage = (event) => {
         try {
@@ -371,21 +375,42 @@ export const App: React.FC = () => {
           setMessages(prev => prev.map(m => {
             if (m.id !== assistantMsgId) return m;
             const timeline = [...(m.timeline || [])];
+            let updated = false;
             for (let i = timeline.length - 1; i >= 0; i--) {
               if (timeline[i].type === 'step') {
                 const s = timeline[i] as any;
-                s.status = event.status || 'done';
-                s.description = event.description || s.description;
-                s.details = event.details;
-                break;
+                if (s.status === 'running') {
+                  s.title = event.title || s.title;
+                  s.status = event.status || 'done';
+                  s.description = event.description || s.description;
+                  s.details = event.details !== undefined ? event.details : s.details;
+                  updated = true;
+                  break;
+                }
               }
+            }
+            if (!updated && event.title) {
+              timeline.push({
+                type: 'step' as const,
+                id: `step_${Date.now()}_${Math.random()}`,
+                title: event.title,
+                description: event.description || '',
+                details: event.details,
+                status: (event.status || 'done') as any
+              });
             }
             return { ...m, timeline };
           }));
         } else if (event.type === 'final') {
           setMessages(prev => prev.map(m => {
             if (m.id !== assistantMsgId) return m;
-            return { ...m, content: event.delta || m.content };
+            const timeline = (m.timeline || []).map(item => {
+              if (item.type === 'step' && (item as any).status === 'running') {
+                return { ...item, status: 'done' as const };
+              }
+              return item;
+            });
+            return { ...m, content: event.delta || m.content, timeline };
           }));
           if (event.tokens) {
             setTotalTokens(prev => ({
@@ -401,12 +426,29 @@ export const App: React.FC = () => {
       if (err.name !== 'AbortError') {
         setMessages(prev => prev.map(m => {
           if (m.id !== assistantMsgId) return m;
-          return { ...m, content: `Error: ${err.message}` };
+          const timeline = (m.timeline || []).map(item => {
+            if (item.type === 'step' && (item as any).status === 'running') {
+              return { ...item, status: 'error' as const };
+            }
+            return item;
+          });
+          return { ...m, content: `Error: ${err.message}`, timeline };
         }));
       }
     } finally {
       abortControllerRef.current = null;
       setIsStreaming(false);
+      // Ensure all running steps in the active assistant message are closed
+      setMessages(prev => prev.map(m => {
+        if (m.id !== assistantMsgId) return m;
+        const timeline = (m.timeline || []).map(item => {
+          if (item.type === 'step' && (item as any).status === 'running') {
+            return { ...item, status: 'done' as const };
+          }
+          return item;
+        });
+        return { ...m, timeline };
+      }));
       loadWorkspace();
       if (activeFilePath) {
         readFile(activeFilePath).then(data => setActiveFileContent(data.content));
@@ -667,7 +709,7 @@ export const App: React.FC = () => {
           onDeleteItem={async (path) => {
             await deleteItem(path);
             await loadWorkspace();
-            if (activeFilePath === path) handleSelectFile('SPEC.md');
+            if (activeFilePath === path) handleSelectFile(defaultSpec);
           }}
           onUploadFile={async (file, dir) => {
             await uploadFile(file, dir);
@@ -677,7 +719,7 @@ export const App: React.FC = () => {
           onInitTemplate={async () => {
             await initWorkspaceTemplate();
             await loadWorkspace();
-            handleSelectFile('SPEC.md');
+            handleSelectFile(defaultSpec);
           }}
         />
 

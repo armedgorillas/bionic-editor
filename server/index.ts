@@ -6,7 +6,7 @@ import cors from 'cors';
 import { WebSocketServer, WebSocket } from 'ws';
 import multer from 'multer';
 
-import { PORT, HOST, WORKSPACE_DIR, PACKAGE_ROOT, OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY, OLLAMA_BASE_URL, updateConfigKeys } from './config.js';
+import { PORT, HOST, WORKSPACE_DIR, PACKAGE_ROOT, OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY, OLLAMA_BASE_URL, updateConfigKeys, BASE_URL, BASE_SPEC } from './config.js';
 import {
   ensureWorkspaceDir,
   initDefaultTemplate,
@@ -25,7 +25,7 @@ import {
   runPythonScript,
   killSessionProcesses
 } from './services/venv.js';
-import { runAgentConversation, StepEvent, cancelAgentSession } from './services/agent.js';
+import { runAgentConversation, StepEvent, cancelAgentSession, getOpenCodeBinary } from './services/agent.js';
 import { initFileWatcher } from './services/fileWatcher.js';
 import { TerminalSession } from './services/terminal.js';
 import {
@@ -40,7 +40,24 @@ ensureWorkspaceDir();
 
 const app = express();
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server, path: '/ws' });
+const wss = new WebSocketServer({ noServer: true });
+
+server.on('upgrade', (request, socket, head) => {
+  try {
+    const host = request.headers.host || 'localhost';
+    const pathname = new URL(request.url || '', `http://${host}`).pathname;
+    const isWsPath = pathname === '/ws' || (BASE_URL && pathname === `${BASE_URL}/ws`);
+    if (isWsPath) {
+      wss.handleUpgrade(request, socket, head, (ws) => {
+        wss.emit('connection', ws, request);
+      });
+    } else {
+      socket.destroy();
+    }
+  } catch {
+    socket.destroy();
+  }
+});
 
 // Track active HTTP sockets to mitigate and recover from socket/file descriptor limits
 const activeSockets = new Set<import('net').Socket>();
@@ -75,17 +92,24 @@ const upload = multer({ storage });
 // Web Report static server - direct single-port serving
 const webReportDir = path.join(WORKSPACE_DIR, 'web-report');
 app.use('/report', express.static(webReportDir));
+if (BASE_URL) {
+  app.use(`${BASE_URL}/report`, express.static(webReportDir));
+}
+
+const apiRouter = express.Router();
 
 // Workspace info
-app.get('/api/workspace/info', (_req, res) => {
+apiRouter.get('/workspace/info', (_req, res) => {
   res.json({
     workspaceDir: WORKSPACE_DIR,
-    venv: getVenvStatus()
+    venv: getVenvStatus(),
+    baseSpec: BASE_SPEC,
+    baseUrl: BASE_URL
   });
 });
 
 // Reinitialize default template
-app.post('/api/workspace/init', (_req, res) => {
+apiRouter.post('/workspace/init', (_req, res) => {
   try {
     initDefaultTemplate();
     res.json({ success: true, message: 'Initialized scientific template.' });
@@ -95,7 +119,7 @@ app.post('/api/workspace/init', (_req, res) => {
 });
 
 // File explorer endpoints
-app.get('/api/files/tree', (_req, res) => {
+apiRouter.get('/files/tree', (_req, res) => {
   try {
     const tree = getFileTree();
     res.json({ tree });
@@ -104,7 +128,7 @@ app.get('/api/files/tree', (_req, res) => {
   }
 });
 
-app.get('/api/files/read', (req, res) => {
+apiRouter.get('/files/read', (req, res) => {
   const filePath = req.query.path as string;
   if (!filePath) {
     return res.status(400).json({ error: 'Missing path query parameter' });
@@ -118,7 +142,7 @@ app.get('/api/files/read', (req, res) => {
   }
 });
 
-app.post('/api/files/write', (req, res) => {
+apiRouter.post('/files/write', (req, res) => {
   const { path: filePath, content } = req.body;
   if (!filePath || content === undefined) {
     return res.status(400).json({ error: 'Missing path or content' });
@@ -132,7 +156,7 @@ app.post('/api/files/write', (req, res) => {
   }
 });
 
-app.post('/api/files/create', (req, res) => {
+apiRouter.post('/files/create', (req, res) => {
   const { path: targetPath, isDirectory } = req.body;
   if (!targetPath) {
     return res.status(400).json({ error: 'Missing path' });
@@ -146,7 +170,7 @@ app.post('/api/files/create', (req, res) => {
   }
 });
 
-app.post('/api/files/rename', (req, res) => {
+apiRouter.post('/files/rename', (req, res) => {
   const { oldPath, newPath } = req.body;
   if (!oldPath || !newPath) {
     return res.status(400).json({ error: 'Missing oldPath or newPath' });
@@ -160,7 +184,7 @@ app.post('/api/files/rename', (req, res) => {
   }
 });
 
-app.post('/api/files/delete', (req, res) => {
+apiRouter.post('/files/delete', (req, res) => {
   const { path: targetPath } = req.body;
   if (!targetPath) {
     return res.status(400).json({ error: 'Missing path' });
@@ -174,7 +198,7 @@ app.post('/api/files/delete', (req, res) => {
   }
 });
 
-app.post('/api/files/upload', upload.single('file'), (req, res) => {
+apiRouter.post('/files/upload', upload.single('file'), (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'No file uploaded' });
   }
@@ -182,7 +206,7 @@ app.post('/api/files/upload', upload.single('file'), (req, res) => {
 });
 
 // Stream raw local files (images, assets) for inline WYSIWYG editor
-app.use('/api/files/raw', (req, res) => {
+apiRouter.use('/files/raw', (req, res) => {
   try {
     const rawPath = req.path.replace(/^\//, '');
     const fullPath = resolveSafePath(rawPath);
@@ -196,11 +220,11 @@ app.use('/api/files/raw', (req, res) => {
 });
 
 // Venv endpoints
-app.get('/api/venv/status', (_req, res) => {
+apiRouter.get('/venv/status', (_req, res) => {
   res.json(getVenvStatus());
 });
 
-app.post('/api/venv/create', async (_req, res) => {
+apiRouter.post('/venv/create', async (_req, res) => {
   try {
     const result = await createVenv();
     res.json(result);
@@ -209,7 +233,7 @@ app.post('/api/venv/create', async (_req, res) => {
   }
 });
 
-app.post('/api/venv/install', async (_req, res) => {
+apiRouter.post('/venv/install', async (_req, res) => {
   try {
     const result = await installRequirements();
     res.json(result);
@@ -218,7 +242,7 @@ app.post('/api/venv/install', async (_req, res) => {
   }
 });
 
-app.post('/api/venv/run', async (req, res) => {
+apiRouter.post('/venv/run', async (req, res) => {
   const { scriptPath, args } = req.body;
   if (!scriptPath) {
     return res.status(400).json({ error: 'Missing scriptPath' });
@@ -233,15 +257,18 @@ app.post('/api/venv/run', async (req, res) => {
 });
 
 // Agent endpoints
-app.get('/api/agent/config', (_req, res) => {
+apiRouter.get('/agent/config', (_req, res) => {
+  const isOpenCodeInstalled = Boolean(getOpenCodeBinary());
   res.json({
     hasGeminiKey: Boolean(GEMINI_API_KEY),
     hasOpenaiKey: Boolean(OPENAI_API_KEY),
     hasAnthropicKey: Boolean(ANTHROPIC_API_KEY),
+    isOpenCodeInstalled,
+    harness: isOpenCodeInstalled ? 'opencode' : 'built-in',
     availableProviders: [
       { id: 'gemini', name: 'Google Gemini (Gemini 2.5 Flash / Pro)', active: Boolean(GEMINI_API_KEY) },
       { id: 'openai', name: 'OpenAI (GPT-4o)', active: Boolean(OPENAI_API_KEY) },
-      { id: 'anthropic', name: 'Anthropic (Claude 3.5 Sonnet)', active: Boolean(ANTHROPIC_API_KEY) },
+      { id: 'anthropic', name: 'Anthropic Claude (3.5 Sonnet)', active: Boolean(ANTHROPIC_API_KEY) },
       { id: 'ollama', name: 'Local Ollama / OpenAI-compatible', active: true },
       { id: 'demo', name: 'Demo / Scientific Assistant (Offline)', active: true }
     ],
@@ -249,7 +276,7 @@ app.get('/api/agent/config', (_req, res) => {
   });
 });
 
-app.post('/api/agent/save-config', (req, res) => {
+apiRouter.post('/agent/save-config', (req, res) => {
   const { geminiApiKey, openaiApiKey, anthropicApiKey } = req.body;
   
   updateConfigKeys({
@@ -303,7 +330,7 @@ app.post('/api/agent/save-config', (req, res) => {
 });
 
 // Session history endpoints
-app.get('/api/agent/sessions', (_req, res) => {
+apiRouter.get('/agent/sessions', (_req, res) => {
   try {
     const list = listSessions();
     res.json({ sessions: list });
@@ -312,7 +339,7 @@ app.get('/api/agent/sessions', (_req, res) => {
   }
 });
 
-app.get('/api/agent/sessions/:id', (req, res) => {
+apiRouter.get('/agent/sessions/:id', (req, res) => {
   try {
     const session = getSession(req.params.id);
     if (!session) return res.status(404).json({ error: 'Session not found' });
@@ -322,7 +349,7 @@ app.get('/api/agent/sessions/:id', (req, res) => {
   }
 });
 
-app.post('/api/agent/sessions', (req, res) => {
+apiRouter.post('/agent/sessions', (req, res) => {
   try {
     const saved = saveSession(req.body);
     res.json(saved);
@@ -331,7 +358,7 @@ app.post('/api/agent/sessions', (req, res) => {
   }
 });
 
-app.delete('/api/agent/sessions/:id', (req, res) => {
+apiRouter.delete('/agent/sessions/:id', (req, res) => {
   try {
     const deleted = deleteSession(req.params.id);
     res.json({ success: deleted });
@@ -341,7 +368,7 @@ app.delete('/api/agent/sessions/:id', (req, res) => {
 });
 
 // Process cancellation endpoint (Stopping work)
-app.post('/api/agent/cancel', (req, res) => {
+apiRouter.post('/agent/cancel', (req, res) => {
   const { sessionId } = req.body;
   if (!sessionId) {
     return res.status(400).json({ error: 'sessionId is required' });
@@ -352,7 +379,7 @@ app.post('/api/agent/cancel', (req, res) => {
 });
 
 // Agent chat with Server-Sent Events (SSE)
-app.post('/api/agent/chat', async (req, res) => {
+apiRouter.post('/agent/chat', async (req, res) => {
   const { messages, config } = req.body;
   if (!messages || !Array.isArray(messages)) {
     return res.status(400).json({ error: 'Messages array is required' });
@@ -394,6 +421,12 @@ app.post('/api/agent/chat', async (req, res) => {
     res.end();
   }
 });
+
+// Mount API router on root /api and on ${BASE_URL}/api if configured
+app.use('/api', apiRouter);
+if (BASE_URL) {
+  app.use(`${BASE_URL}/api`, apiRouter);
+}
 
 // WebSocket management with heartbeat and socket reclamation
 interface ExtWebSocket extends WebSocket {
@@ -511,10 +544,56 @@ const possibleClientDistPaths = [
 const clientDist = possibleClientDistPaths.find(p => fs.existsSync(p)) || path.join(PACKAGE_ROOT, 'client', 'dist');
 
 if (fs.existsSync(clientDist)) {
-  app.use(express.static(clientDist));
+  app.use(express.static(clientDist, { index: false }));
+  if (BASE_URL) {
+    app.use(BASE_URL, express.static(clientDist, { index: false }));
+  }
+
+  const sendIndexHtml = (_req: express.Request, res: express.Response) => {
+    try {
+      let html = fs.readFileSync(path.join(clientDist, 'index.html'), 'utf-8');
+      const basePrefix = BASE_URL || '';
+      const baseHref = BASE_URL ? `${BASE_URL}/` : '/';
+      const configScript = `<script>window.__BIONIC_CONFIG__ = ${JSON.stringify({
+        baseUrl: basePrefix,
+        baseSpec: BASE_SPEC
+      })};</script><base href="${baseHref}">`;
+
+      if (html.includes('<head>')) {
+        html = html.replace('<head>', `<head>\n  ${configScript}`);
+      } else {
+        html = configScript + html;
+      }
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.send(html);
+    } catch (err: any) {
+      res.status(500).send(`Error reading index.html: ${err.message}`);
+    }
+  };
+
+  if (BASE_URL) {
+    app.use((req, res, next) => {
+      // If requested exact slug without trailing slash (e.g. /ws-01 or /ws-01?query), redirect to /ws-01/
+      const urlWithoutQuery = (req.originalUrl || req.url || '').split('?')[0];
+      if (req.method === 'GET' && urlWithoutQuery === BASE_URL) {
+        const query = (req.originalUrl || req.url || '').includes('?')
+          ? '?' + (req.originalUrl || req.url || '').split('?')[1]
+          : '';
+        return res.redirect(301, `${BASE_URL}/${query}`);
+      }
+      next();
+    });
+  }
+
   app.use((req, res, next) => {
-    if (req.method === 'GET' && !req.path.startsWith('/api') && !req.path.startsWith('/report')) {
-      return res.sendFile(path.join(clientDist, 'index.html'));
+    if (req.method !== 'GET') return next();
+    const p = req.path;
+    if (p.startsWith('/api') || p.startsWith('/report')) return next();
+    if (BASE_URL && (p.startsWith(`${BASE_URL}/api`) || p.startsWith(`${BASE_URL}/report`))) return next();
+
+    // Match root, slug root, or subpaths
+    if (p === '/' || !BASE_URL || p === `${BASE_URL}/` || p.startsWith(`${BASE_URL}/`)) {
+      return sendIndexHtml(req, res);
     }
     next();
   });
@@ -562,9 +641,14 @@ server.on('error', (err: any) => {
 
 server.listen(PORT, HOST, () => {
   const displayHost = HOST === '0.0.0.0' ? 'localhost' : HOST;
+  const baseDisplay = BASE_URL ? `${BASE_URL}/` : '';
   console.log(`\n======================================================`);
-  console.log(`🔬 Bionic Editor running at http://${displayHost}:${PORT}`);
+  console.log(`🔬 Bionic Editor running at http://${displayHost}:${PORT}/${baseDisplay}`);
   console.log(`📁 Workspace: ${WORKSPACE_DIR}`);
-  console.log(`📊 Web Report: http://${displayHost}:${PORT}/report/`);
+  console.log(`📄 Base Spec: ${BASE_SPEC}`);
+  if (BASE_URL) {
+    console.log(`🔗 Base URL Slug: ${BASE_URL}`);
+  }
+  console.log(`📊 Web Report: http://${displayHost}:${PORT}/${BASE_URL ? BASE_URL.slice(1) + '/' : ''}report/`);
   console.log(`======================================================\n`);
 });

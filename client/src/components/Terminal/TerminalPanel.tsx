@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Terminal as TerminalIcon, Play, Trash2, X } from 'lucide-react';
+import { getBionicConfig } from '../../services/api';
 
 interface TerminalPanelProps {
   onClose?: () => void;
@@ -16,8 +17,9 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ onClose }) => {
   const terminalEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    const config = getBionicConfig();
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/ws`;
+    const wsUrl = `${protocol}//${window.location.host}${config.baseUrl}/ws`;
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
@@ -83,11 +85,13 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ onClose }) => {
     setOutput(['Terminal cleared. Ready.\n']);
   };
 
+  const baseSpec = getBionicConfig().baseSpec || 'SPEC.md';
+
   const quickActions = [
     { label: 'Run analyze.py', cmd: 'python src/analyze.py' },
     { label: 'Check pip packages', cmd: 'pip list' },
     { label: 'List raw datasets', cmd: 'ls -l data/raw/' },
-    { label: 'View SPEC.md', cmd: 'head -n 20 SPEC.md' }
+    { label: `View ${baseSpec}`, cmd: `head -n 20 ${baseSpec}` }
   ];
 
   return (

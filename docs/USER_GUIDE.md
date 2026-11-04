@@ -28,13 +28,14 @@ Every analysis project in Bionic Editor is structured around reproducible data s
 
 ---
 
-## 3. Working with the AI Scientific Agent
+## 3. Working with the AI Scientific Agent (Powered by OpenCode)
 
-The AI Agent acts as your computational research assistant. It has access to:
-- `read_file`: Inspecting datasets and scripts.
-- `write_file`: Writing Python scripts and updating `SPEC.md`.
-- `run_command` & `run_python`: Executing scripts inside the project `.venv`.
-- `list_files`: Scanning workspace contents.
+The AI Agent acts as your computational research assistant, powered under the hood by **OpenCode** ([opencode.ai](https://opencode.ai)). It provides a state-of-the-art coding harness with multi-turn session persistence, surgical editing, and fast directory querying:
+- `read`: Inspecting specific files or line ranges.
+- `edit`: Surgically patching files and scripts without full-file rewrites.
+- `write`: Creating new scripts or report files.
+- `bash`: Executing commands inside the project `.venv`.
+- `grep` & `glob`: Searching keywords and finding files instantly across the workspace.
 
 ### Transparent Coding Harness:
 1. **Agent Plan & Logic**: Explains the rationale before executing tools.
