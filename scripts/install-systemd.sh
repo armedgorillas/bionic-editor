@@ -12,6 +12,8 @@ Options:
   -w, --workspace DIR     Arbitrary workspace path to serve (default: /var/lib/bionic-editor/workspace)
   -p, --port PORT         HTTP port to bind (default: 3000)
   -h, --host HOST         Host IP to bind (default: 0.0.0.0)
+  -b, --base-url SLUG     Base URL slug prefix (e.g. /ws-01 or ws-01)
+  -s, --base-spec FILE    Default base spec file (default: SPEC.md)
   -u, --user USERNAME     System user to run the service as (default: current user / root)
   -e, --env-file PATH     Path to save environment configuration (default: /etc/bionic-editor.env)
   --service-name NAME     Systemd service name (default: bionic-editor)
@@ -20,8 +22,8 @@ Options:
   --help                  Show this help message
 
 Examples:
-  sudo ./scripts/install-systemd.sh --workspace /srv/bio/experiment_01 --port 8080
-  sudo ./scripts/install-systemd.sh -w /data/analysis -u scientist
+  sudo ./scripts/install-systemd.sh --workspace /srv/bio/experiment_01 --port 8080 --base-url /ws-01
+  sudo ./scripts/install-systemd.sh -w /data/analysis -u scientist --base-spec HYPOTHESES.md
 EOF
 }
 
@@ -37,6 +39,8 @@ SERVICE_USER="${SUDO_USER:-$USER}"
 WORKSPACE_PATH="/var/lib/bionic-editor/workspace"
 SERVICE_PORT="3000"
 SERVICE_HOST="0.0.0.0"
+BASE_URL_SLUG=""
+BASE_SPEC_FILE="SPEC.md"
 ENV_FILE="/etc/bionic-editor.env"
 SERVICE_NAME="bionic-editor"
 START_SERVICE=true
@@ -55,6 +59,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     -h|--host)
       SERVICE_HOST="$2"
+      shift 2
+      ;;
+    -b|--base-url)
+      BASE_URL_SLUG="$2"
+      shift 2
+      ;;
+    -s|--base-spec)
+      BASE_SPEC_FILE="$2"
       shift 2
       ;;
     -u|--user)
@@ -96,6 +108,8 @@ echo " Application Directory : ${APP_DIR}"
 echo " Workspace Directory   : ${WORKSPACE_PATH}"
 echo " Service User          : ${SERVICE_USER}"
 echo " Port / Host           : ${SERVICE_PORT} (${SERVICE_HOST})"
+echo " Base URL Slug         : ${BASE_URL_SLUG:-'(root)'}"
+echo " Base Spec File        : ${BASE_SPEC_FILE}"
 echo " Environment File      : ${ENV_FILE}"
 echo " Service Name          : ${SERVICE_NAME}.service"
 echo "=========================================================="
@@ -149,6 +163,9 @@ NODE_ENV=production
 WORKSPACE_DIR=${WORKSPACE_PATH}
 PORT=${SERVICE_PORT}
 HOST=${SERVICE_HOST}
+BASE_URL=${BASE_URL_SLUG}
+BASE_SPEC=${BASE_SPEC_FILE}
+SERVICE_USER=${SERVICE_USER}
 
 # AI Provider API Keys (Fill in as needed)
 GEMINI_API_KEY=
@@ -161,15 +178,26 @@ EOF
     chown "${SERVICE_USER}:${SERVICE_USER}" "${ENV_FILE}" 2>/dev/null || true
   fi
 else
-  echo "ℹ️ Existing environment file found at ${ENV_FILE}, updating WORKSPACE_DIR, PORT, HOST..."
+  echo "ℹ️ Existing environment file found at ${ENV_FILE}, updating WORKSPACE_DIR, PORT, HOST, BASE_URL, BASE_SPEC, SERVICE_USER..."
   grep -q "^WORKSPACE_DIR=" "${ENV_FILE}" && sed -i "s|^WORKSPACE_DIR=.*|WORKSPACE_DIR=${WORKSPACE_PATH}|" "${ENV_FILE}" || echo "WORKSPACE_DIR=${WORKSPACE_PATH}" >> "${ENV_FILE}"
   grep -q "^PORT=" "${ENV_FILE}" && sed -i "s|^PORT=.*|PORT=${SERVICE_PORT}|" "${ENV_FILE}" || echo "PORT=${SERVICE_PORT}" >> "${ENV_FILE}"
   grep -q "^HOST=" "${ENV_FILE}" && sed -i "s|^HOST=.*|HOST=${SERVICE_HOST}|" "${ENV_FILE}" || echo "HOST=${SERVICE_HOST}" >> "${ENV_FILE}"
+  grep -q "^BASE_URL=" "${ENV_FILE}" && sed -i "s|^BASE_URL=.*|BASE_URL=${BASE_URL_SLUG}|" "${ENV_FILE}" || echo "BASE_URL=${BASE_URL_SLUG}" >> "${ENV_FILE}"
+  grep -q "^BASE_SPEC=" "${ENV_FILE}" && sed -i "s|^BASE_SPEC=.*|BASE_SPEC=${BASE_SPEC_FILE}|" "${ENV_FILE}" || echo "BASE_SPEC=${BASE_SPEC_FILE}" >> "${ENV_FILE}"
+  grep -q "^SERVICE_USER=" "${ENV_FILE}" && sed -i "s|^SERVICE_USER=.*|SERVICE_USER=${SERVICE_USER}|" "${ENV_FILE}" || echo "SERVICE_USER=${SERVICE_USER}" >> "${ENV_FILE}"
 fi
 
 # Install systemd service unit
 SYSTEMD_UNIT_PATH="/etc/systemd/system/${SERVICE_NAME}.service"
 echo "⚙️ Creating systemd service unit at: ${SYSTEMD_UNIT_PATH}"
+
+EXEC_ARGS="--workspace ${WORKSPACE_PATH} --port ${SERVICE_PORT} --host ${SERVICE_HOST} --base-spec ${BASE_SPEC_FILE}"
+if [ -n "${BASE_URL_SLUG}" ]; then
+  EXEC_ARGS="${EXEC_ARGS} --base-url ${BASE_URL_SLUG}"
+fi
+if [ -n "${SERVICE_USER}" ]; then
+  EXEC_ARGS="${EXEC_ARGS} --user ${SERVICE_USER}"
+fi
 
 cat > "${SYSTEMD_UNIT_PATH}" << EOF
 [Unit]
@@ -180,13 +208,16 @@ After=network.target
 [Service]
 Type=simple
 User=${SERVICE_USER}
+Group=${SERVICE_USER}
 WorkingDirectory=${WORKSPACE_PATH}
 EnvironmentFile=-${ENV_FILE}
 Environment=NODE_ENV=production
 Environment=WORKSPACE_DIR=${WORKSPACE_PATH}
 Environment=PORT=${SERVICE_PORT}
 Environment=HOST=${SERVICE_HOST}
-ExecStart=${NODE_BIN} ${APP_DIR}/dist-server/index.js --workspace ${WORKSPACE_PATH} --port ${SERVICE_PORT} --host ${SERVICE_HOST}
+Environment=BASE_SPEC=${BASE_SPEC_FILE}
+Environment=SERVICE_USER=${SERVICE_USER}
+ExecStart=${NODE_BIN} ${APP_DIR}/dist-server/index.js ${EXEC_ARGS}
 Restart=always
 RestartSec=5s
 LimitNOFILE=65536

@@ -46,7 +46,9 @@ This guide describes how to install and run **Bionic Editor** in an arbitrary di
    | `-w, --workspace <dir>` | Arbitrary workspace path to serve | `/var/lib/bionic-editor/workspace` |
    | `-p, --port <number>` | Port number to bind | `3000` |
    | `-h, --host <ip>` | Host IP to bind | `0.0.0.0` |
-   | `-u, --user <username>` | Service user | Current sudo user or `root` |
+   | `-b, --base-url <slug>`| Base URL slug prefix (e.g., `/ws-01`) | None (root) |
+   | `-s, --base-spec <file>`| Default base spec file | `SPEC.md` |
+   | `-u, --user <username>` | Service user (ensures coding mode and agent share user permissions) | Current sudo user or `root` |
    | `-e, --env-file <path>` | Path to configuration file | `/etc/bionic-editor.env` |
    | `--service-name <name>`| Systemd service name | `bionic-editor` |
    | `--no-start` | Install & enable without starting | `false` |

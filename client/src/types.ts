@@ -56,4 +56,6 @@ export interface VenvStatus {
 export interface WorkspaceInfo {
   workspaceDir: string;
   venv: VenvStatus;
+  baseSpec?: string;
+  baseUrl?: string;
 }

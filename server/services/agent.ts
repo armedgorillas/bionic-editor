@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
-import { OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY, OLLAMA_BASE_URL, WORKSPACE_DIR } from '../config.js';
+import { OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY, OLLAMA_BASE_URL, WORKSPACE_DIR, BASE_SPEC } from '../config.js';
 import { readFileContent, writeFileContent, getFileTree, resolveSafePath } from './workspace.js';
 import { runPythonScript, runBashCommand } from './venv.js';
 
@@ -60,7 +60,7 @@ HOW YOU OPERATE AS A CODING HARNESS:
 1. Always state your reasoning and plan clearly before and during tool use. Explain what hypothesis you are testing, which file you are inspecting, and why you are running a command.
 2. When executing bash or Python scripts, inspect stdout and stderr carefully. If any error, syntax issue, or non-zero exit code occurs, analyze the traceback thoroughly, explain what went wrong, and take corrective action (such as fixing syntax, installing dependencies, or fixing data file paths).
 3. Be transparent and rigorous: show your computational logic so the scientist can audit and verify the work.
-4. When refining the experimental protocol, modify SPEC.md directly.
+4. When refining the experimental protocol, modify ${BASE_SPEC} directly.
 5. When writing Python code, place reproducible scripts in src/ and run them using the isolated virtual environment.
 6. Always save processed datasets to data/processed/ and interactive HTML reports to web-report/index.html.`;
 
@@ -73,7 +73,7 @@ const TOOLS_SCHEMA_OPENAI: OpenAI.Chat.Completions.ChatCompletionTool[] = [
       parameters: {
         type: 'object',
         properties: {
-          path: { type: 'string', description: 'Relative path to file, e.g. SPEC.md or src/analyze.py' }
+          path: { type: 'string', description: `Relative path to file, e.g. ${BASE_SPEC} or src/analyze.py` }
         },
         required: ['path']
       }
@@ -87,7 +87,7 @@ const TOOLS_SCHEMA_OPENAI: OpenAI.Chat.Completions.ChatCompletionTool[] = [
       parameters: {
         type: 'object',
         properties: {
-          path: { type: 'string', description: 'Relative path to file, e.g. SPEC.md or web-report/index.html' },
+          path: { type: 'string', description: `Relative path to file, e.g. ${BASE_SPEC} or web-report/index.html` },
           content: { type: 'string', description: 'Full text content to write' }
         },
         required: ['path', 'content']
@@ -328,7 +328,7 @@ async function handleDemoAgent(
     onEvent({
       type: 'step_start',
       title: 'Reading Experiment Plan',
-      description: 'Checking SPEC.md for existing hypotheses and objectives...'
+      description: `Checking ${BASE_SPEC} for existing hypotheses and objectives...`
     });
     await new Promise(r => setTimeout(r, 500));
 
@@ -342,10 +342,10 @@ async function handleDemoAgent(
     onEvent({
       type: 'step_done',
       title: 'Plan Updated',
-      description: 'Updated SPEC.md with refined hypotheses and methodology.'
+      description: `Updated ${BASE_SPEC} with refined hypotheses and methodology.`
     });
 
-    const reply = `I have reviewed and refined your scientific specification in \`SPEC.md\`.\n\n` +
+    const reply = `I have reviewed and refined your scientific specification in \`${BASE_SPEC}\`.\n\n` +
       `**Key additions:**\n` +
       `- Added specific statistical thresholding criteria (Benjamini-Hochberg FDR < 0.05, |Log2FC| > 1.0)\n` +
       `- Defined quality control steps for replicate variance\n` +
@@ -373,10 +373,10 @@ async function handleDemoAgent(
 
   const reply = `Hello! I am your Bionic Editor Scientific Assistant.\n\n` +
     `I can help you:\n` +
-    `1. **Draft & Refine Plans**: Write or edit hypotheses in \`SPEC.md\`.\n` +
+    `1. **Draft & Refine Plans**: Write or edit hypotheses in \`${BASE_SPEC}\`.\n` +
     `2. **Analyze Data**: Run Python analyses on datasets in \`data/raw/\` using your isolated virtual environment.\n` +
     `3. **Generate Reports**: Build interactive charts and summaries viewable in the **Web Report** panel.\n\n` +
-    `How would you like to start? For example, you can ask me to *"Analyze the gene expression sample"* or *"Flesh out the SPEC.md plan"*!`;
+    `How would you like to start? For example, you can ask me to *"Analyze the gene expression sample"* or *"Flesh out the ${BASE_SPEC} plan"*!`;
 
   onEvent({ type: 'final', delta: reply, tokens });
   return { text: reply, tokens };

@@ -1,7 +1,7 @@
 import { spawn, ChildProcessWithoutNullStreams } from 'child_process';
 import path from 'path';
 import { WebSocket } from 'ws';
-import { WORKSPACE_DIR } from '../config.js';
+import { WORKSPACE_DIR, getTargetSpawnOptions } from '../config.js';
 
 export class TerminalSession {
   private proc: ChildProcessWithoutNullStreams | null = null;
@@ -14,16 +14,15 @@ export class TerminalSession {
 
   private start() {
     const venvBin = path.join(WORKSPACE_DIR, '.venv', 'bin');
-    const env = {
-      ...process.env,
+    const spawnOpts = getTargetSpawnOptions({
       PATH: `${venvBin}:${process.env.PATH}`,
       TERM: 'xterm-256color',
       PS1: 'bionic-env:\\w$ '
-    };
+    });
 
     this.proc = spawn('/bin/bash', ['-i'], {
       cwd: WORKSPACE_DIR,
-      env
+      ...spawnOpts
     });
 
     this.proc.stdout.on('data', (chunk) => {

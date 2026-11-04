@@ -35,7 +35,8 @@ import {
   fetchChatSession,
   saveChatSession,
   deleteChatSession,
-  cancelAgentExecution
+  cancelAgentExecution,
+  getBionicConfig
 } from './services/api';
 import { 
   Code, 
@@ -50,8 +51,10 @@ import {
 } from 'lucide-react';
 
 export const App: React.FC = () => {
+  const bionicConfig = getBionicConfig();
+  const defaultSpec = bionicConfig.baseSpec || 'SPEC.md';
   const [fileTree, setFileTree] = useState<FileItem[]>([]);
-  const [activeFilePath, setActiveFilePath] = useState<string>('SPEC.md');
+  const [activeFilePath, setActiveFilePath] = useState<string>(defaultSpec);
   const [activeFileContent, setActiveFileContent] = useState<string>('');
   const [viewMode, setViewMode] = useState<'editor' | 'report'>('editor');
   
@@ -107,7 +110,7 @@ export const App: React.FC = () => {
     {
       id: 'welcome',
       role: 'assistant',
-      content: `Welcome to **Bionic Editor**! 🔬\n\nI am your scientific AI assistant. You can write your experimental specifications and hypotheses in **SPEC.md** on the left, and describe what data analyses to perform. I will write and run Python scripts in your isolated virtual environment and render interactive charts in the **Web Report** panel.`,
+      content: `Welcome to **Bionic Editor**! 🔬\n\nI am your scientific AI assistant. You can write your experimental specifications and hypotheses in **${defaultSpec}** on the left, and describe what data analyses to perform. I will write and run Python scripts in your isolated virtual environment and render interactive charts in the **Web Report** panel.`,
       timestamp: Date.now()
     }
   ]);
@@ -162,9 +165,9 @@ export const App: React.FC = () => {
   // Initial load
   useEffect(() => {
     loadWorkspace().then(() => {
-      handleSelectFile('SPEC.md');
+      handleSelectFile(defaultSpec);
     });
-  }, [loadWorkspace, handleSelectFile]);
+  }, [loadWorkspace, handleSelectFile, defaultSpec]);
 
   // WebSocket for file changes
   const activeFilePathRef = useRef(activeFilePath);
@@ -180,7 +183,8 @@ export const App: React.FC = () => {
     const connect = () => {
       if (isDisposed) return;
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+      const wsUrl = `${protocol}//${window.location.host}${bionicConfig.baseUrl}/ws`;
+      ws = new WebSocket(wsUrl);
 
       ws.onmessage = (event) => {
         try {
@@ -667,7 +671,7 @@ export const App: React.FC = () => {
           onDeleteItem={async (path) => {
             await deleteItem(path);
             await loadWorkspace();
-            if (activeFilePath === path) handleSelectFile('SPEC.md');
+            if (activeFilePath === path) handleSelectFile(defaultSpec);
           }}
           onUploadFile={async (file, dir) => {
             await uploadFile(file, dir);
@@ -677,7 +681,7 @@ export const App: React.FC = () => {
           onInitTemplate={async () => {
             await initWorkspaceTemplate();
             await loadWorkspace();
-            handleSelectFile('SPEC.md');
+            handleSelectFile(defaultSpec);
           }}
         />
 

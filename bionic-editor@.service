@@ -17,6 +17,8 @@ Environment=NODE_ENV=production
 Environment=HOST=0.0.0.0
 # Arbitrary workspace path based on instance name (%i)
 Environment=WORKSPACE_DIR=/var/lib/bionic-editor/workspaces/%i
+Environment=BASE_SPEC=SPEC.md
+Environment=BASE_URL=/%i
 
 ExecStart=/usr/bin/node /opt/bioniceditor/dist-server/index.js
 
