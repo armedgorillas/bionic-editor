@@ -224,17 +224,40 @@ test('URL Slug, Base Spec, and Target User Test Suite', async (t) => {
       assert.equal(readData.content, 'print("move test")\n');
     });
 
-    await t.test('Agent API identifies OpenCode harness when binary is present', async () => {
+    await t.test('Agent API reports harness configuration appropriately', async () => {
       const { getOpenCodeBinary } = await import('../dist-server/services/agent.js');
       const bin = getOpenCodeBinary();
-      assert.ok(bin, 'OpenCode binary should be discovered on system');
 
       const res = await fetch(`${baseUrl}${testSlug}/api/agent/config`);
       assert.equal(res.status, 200);
       const config = await res.json();
-      assert.equal(config.isOpenCodeInstalled, true);
-      assert.equal(config.harness, 'opencode');
+      if (bin) {
+        assert.equal(config.isOpenCodeInstalled, true);
+        assert.equal(config.harness, 'opencode');
+      } else {
+        assert.equal(config.isOpenCodeInstalled, false);
+        assert.equal(config.harness, 'built-in');
+      }
       assert.ok(config.availableProviders.some(p => p.id === 'gemini'));
+    });
+
+    await t.test('getOpenCodeBinary detects binary via OPENCODE_BIN override', async () => {
+      const { getOpenCodeBinary } = await import('../dist-server/services/agent.js');
+      const mockBin = path.join(os.tmpdir(), `mock-opencode-${Date.now()}`);
+      fs.writeFileSync(mockBin, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+      const orig = process.env.OPENCODE_BIN;
+      try {
+        process.env.OPENCODE_BIN = mockBin;
+        const detected = getOpenCodeBinary();
+        assert.equal(detected, mockBin);
+      } finally {
+        if (orig !== undefined) {
+          process.env.OPENCODE_BIN = orig;
+        } else {
+          delete process.env.OPENCODE_BIN;
+        }
+        try { fs.unlinkSync(mockBin); } catch {}
+      }
     });
 
   } finally {
