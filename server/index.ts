@@ -25,7 +25,7 @@ import {
   runPythonScript,
   killSessionProcesses
 } from './services/venv.js';
-import { runAgentConversation, StepEvent, cancelAgentSession } from './services/agent.js';
+import { runAgentConversation, StepEvent, cancelAgentSession, getOpenCodeBinary } from './services/agent.js';
 import { initFileWatcher } from './services/fileWatcher.js';
 import { TerminalSession } from './services/terminal.js';
 import {
@@ -258,14 +258,17 @@ apiRouter.post('/venv/run', async (req, res) => {
 
 // Agent endpoints
 apiRouter.get('/agent/config', (_req, res) => {
+  const isOpenCodeInstalled = Boolean(getOpenCodeBinary());
   res.json({
     hasGeminiKey: Boolean(GEMINI_API_KEY),
     hasOpenaiKey: Boolean(OPENAI_API_KEY),
     hasAnthropicKey: Boolean(ANTHROPIC_API_KEY),
+    isOpenCodeInstalled,
+    harness: isOpenCodeInstalled ? 'opencode' : 'built-in',
     availableProviders: [
-      { id: 'gemini', name: 'Google Gemini (Gemini 2.5 Flash / Pro)', active: Boolean(GEMINI_API_KEY) },
-      { id: 'openai', name: 'OpenAI (GPT-4o)', active: Boolean(OPENAI_API_KEY) },
-      { id: 'anthropic', name: 'Anthropic (Claude 3.5 Sonnet)', active: Boolean(ANTHROPIC_API_KEY) },
+      { id: 'gemini', name: isOpenCodeInstalled ? 'Google Gemini (OpenCode)' : 'Google Gemini (Gemini 2.5 Flash / Pro)', active: Boolean(GEMINI_API_KEY) },
+      { id: 'openai', name: isOpenCodeInstalled ? 'OpenAI (OpenCode)' : 'OpenAI (GPT-4o)', active: Boolean(OPENAI_API_KEY) },
+      { id: 'anthropic', name: isOpenCodeInstalled ? 'Anthropic Claude (OpenCode)' : 'Anthropic (Claude 3.5 Sonnet)', active: Boolean(ANTHROPIC_API_KEY) },
       { id: 'ollama', name: 'Local Ollama / OpenAI-compatible', active: true },
       { id: 'demo', name: 'Demo / Scientific Assistant (Offline)', active: true }
     ],

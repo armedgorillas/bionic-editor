@@ -224,6 +224,19 @@ test('URL Slug, Base Spec, and Target User Test Suite', async (t) => {
       assert.equal(readData.content, 'print("move test")\n');
     });
 
+    await t.test('Agent API identifies OpenCode harness when binary is present', async () => {
+      const { getOpenCodeBinary } = await import('../dist-server/services/agent.js');
+      const bin = getOpenCodeBinary();
+      assert.ok(bin, 'OpenCode binary should be discovered on system');
+
+      const res = await fetch(`${baseUrl}${testSlug}/api/agent/config`);
+      assert.equal(res.status, 200);
+      const config = await res.json();
+      assert.equal(config.isOpenCodeInstalled, true);
+      assert.equal(config.harness, 'opencode');
+      assert.ok(config.availableProviders.some(p => p.id === 'gemini'));
+    });
+
   } finally {
     if (serverProc) {
       serverProc.kill('SIGTERM');

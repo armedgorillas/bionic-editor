@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import type { ChatMessage, TokenUsage, ChatSessionSummary } from '../../types';
 import { MarkdownMessage } from './MarkdownMessage';
+import { getBionicConfig } from '../../services/api';
 
 interface AgentPanelProps {
   messages: ChatMessage[];
@@ -78,9 +79,11 @@ export const AgentPanel: React.FC<AgentPanelProps> = ({
     setExpandedSteps(prev => ({ ...prev, [stepId]: !prev[stepId] }));
   };
 
+  const baseSpec = getBionicConfig().baseSpec || 'SPEC.md';
+
   const quickPrompts = [
     { label: 'Analyze Expression Data', text: 'Run the Python data analysis script on the raw expression dataset.' },
-    { label: 'Flesh Out SPEC.md', text: 'Help flesh out the hypotheses and analysis pipeline in SPEC.md.' },
+    { label: `Flesh Out ${baseSpec}`, text: `Help flesh out the hypotheses and analysis pipeline in ${baseSpec}.` },
     { label: 'Generate Web Report', text: 'Create an interactive scientific visualization in web-report/index.html.' }
   ];
 
@@ -94,7 +97,7 @@ export const AgentPanel: React.FC<AgentPanelProps> = ({
           </div>
           <div className="truncate">
             <h3 className="text-xs font-semibold text-gray-800 leading-tight truncate">AI Scientific Agent</h3>
-            <span className="text-[10px] text-gray-400">Coding Harness</span>
+            <span className="text-[10px] text-indigo-600 font-medium">Powered by OpenCode</span>
           </div>
         </div>
 
