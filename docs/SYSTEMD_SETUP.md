@@ -21,6 +21,11 @@ This guide describes how to install and run **Bionic Editor** in an arbitrary di
 
 - **Node.js**: v18+ (tested on Node v20/v24)
 - **Python**: 3.10+ (for Python analyses and workspace `.venv`)
+- **OpenCode** (Recommended): Powers the AI agent coding harness under the hood:
+  ```bash
+  curl -fsSL https://opencode.ai/install | bash
+  # Or: npm install -g opencode
+  ```
 - **systemd**: Standard on modern Linux distributions (Ubuntu, Debian, RHEL, CentOS, Rocky Linux, Fedora, Arch)
 
 ---

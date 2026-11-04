@@ -128,6 +128,26 @@ if [ -z "$NODE_BIN" ]; then
 fi
 echo "✓ Found Node.js at: ${NODE_BIN}"
 
+# Detect OpenCode executable
+OPENCODE_BIN="$(command -v opencode || true)"
+if [ -z "$OPENCODE_BIN" ] && [ -f "${HOME}/.opencode/bin/opencode" ]; then
+  OPENCODE_BIN="${HOME}/.opencode/bin/opencode"
+fi
+if [ -z "$OPENCODE_BIN" ] && [ -n "$SUDO_USER" ] && [ -f "/home/${SUDO_USER}/.opencode/bin/opencode" ]; then
+  OPENCODE_BIN="/home/${SUDO_USER}/.opencode/bin/opencode"
+fi
+if [ -z "$OPENCODE_BIN" ] && [ -n "$SERVICE_USER" ] && [ -f "/home/${SERVICE_USER}/.opencode/bin/opencode" ]; then
+  OPENCODE_BIN="/home/${SERVICE_USER}/.opencode/bin/opencode"
+fi
+
+if [ -n "$OPENCODE_BIN" ]; then
+  echo "✓ Found OpenCode agent engine at: ${OPENCODE_BIN}"
+else
+  echo "ℹ️ OpenCode CLI not detected on system PATH."
+  echo "💡 Recommended for optimal agent performance: install OpenCode via"
+  echo "   curl -fsSL https://opencode.ai/install | bash"
+fi
+
 # Build application assets if needed
 CLIENT_DIST="${APP_DIR}/client/dist/index.html"
 SERVER_DIST="${APP_DIR}/dist-server/index.js"
@@ -166,6 +186,7 @@ HOST=${SERVICE_HOST}
 BASE_URL=${BASE_URL_SLUG}
 BASE_SPEC=${BASE_SPEC_FILE}
 SERVICE_USER=${SERVICE_USER}
+${OPENCODE_BIN:+OPENCODE_BIN=${OPENCODE_BIN}}
 
 # AI Provider API Keys (Fill in as needed)
 GEMINI_API_KEY=

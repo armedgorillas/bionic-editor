@@ -65,7 +65,14 @@ Bionic Editor is an IDE designed for biologists, researchers, and analytical thi
 
 ### Prerequisites
 - **Node.js**: v18+ (tested on Node v20, v22, v24)
-- **Python**: 3.10+ (for data analysis and `.venv`)
+- **Python**: 3.10+ (for data analysis and workspace `.venv`)
+- **OpenCode** (Recommended): Powers the AI agent coding harness under the hood. Install via:
+  ```bash
+  curl -fsSL https://opencode.ai/install | bash
+  # Or via npm:
+  npm install -g opencode
+  ```
+  *(If OpenCode is not installed, Bionic Editor falls back gracefully to its built-in runner or offline demo mode).*
 
 ### Option A: Install Globally via NPM (Easiest)
 
