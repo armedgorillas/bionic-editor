@@ -375,21 +375,42 @@ export const App: React.FC = () => {
           setMessages(prev => prev.map(m => {
             if (m.id !== assistantMsgId) return m;
             const timeline = [...(m.timeline || [])];
+            let updated = false;
             for (let i = timeline.length - 1; i >= 0; i--) {
               if (timeline[i].type === 'step') {
                 const s = timeline[i] as any;
-                s.status = event.status || 'done';
-                s.description = event.description || s.description;
-                s.details = event.details;
-                break;
+                if (s.status === 'running') {
+                  s.title = event.title || s.title;
+                  s.status = event.status || 'done';
+                  s.description = event.description || s.description;
+                  s.details = event.details !== undefined ? event.details : s.details;
+                  updated = true;
+                  break;
+                }
               }
+            }
+            if (!updated && event.title) {
+              timeline.push({
+                type: 'step' as const,
+                id: `step_${Date.now()}_${Math.random()}`,
+                title: event.title,
+                description: event.description || '',
+                details: event.details,
+                status: (event.status || 'done') as any
+              });
             }
             return { ...m, timeline };
           }));
         } else if (event.type === 'final') {
           setMessages(prev => prev.map(m => {
             if (m.id !== assistantMsgId) return m;
-            return { ...m, content: event.delta || m.content };
+            const timeline = (m.timeline || []).map(item => {
+              if (item.type === 'step' && (item as any).status === 'running') {
+                return { ...item, status: 'done' as const };
+              }
+              return item;
+            });
+            return { ...m, content: event.delta || m.content, timeline };
           }));
           if (event.tokens) {
             setTotalTokens(prev => ({
@@ -405,12 +426,29 @@ export const App: React.FC = () => {
       if (err.name !== 'AbortError') {
         setMessages(prev => prev.map(m => {
           if (m.id !== assistantMsgId) return m;
-          return { ...m, content: `Error: ${err.message}` };
+          const timeline = (m.timeline || []).map(item => {
+            if (item.type === 'step' && (item as any).status === 'running') {
+              return { ...item, status: 'error' as const };
+            }
+            return item;
+          });
+          return { ...m, content: `Error: ${err.message}`, timeline };
         }));
       }
     } finally {
       abortControllerRef.current = null;
       setIsStreaming(false);
+      // Ensure all running steps in the active assistant message are closed
+      setMessages(prev => prev.map(m => {
+        if (m.id !== assistantMsgId) return m;
+        const timeline = (m.timeline || []).map(item => {
+          if (item.type === 'step' && (item as any).status === 'running') {
+            return { ...item, status: 'done' as const };
+          }
+          return item;
+        });
+        return { ...m, timeline };
+      }));
       loadWorkspace();
       if (activeFilePath) {
         readFile(activeFilePath).then(data => setActiveFileContent(data.content));

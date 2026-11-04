@@ -343,37 +343,30 @@ export async function runOpenCodeAgent(
         if (!line.trim()) continue;
         try {
           const evt = JSON.parse(line.trim());
-          if (evt.type === 'step_start') {
-            onEvent({
-              type: 'step_start',
-              title: 'OpenCode Harness',
-              description: 'Analyzing workspace...',
-              status: 'running'
-            });
-          } else if (evt.type === 'tool_use') {
+          if (evt.type === 'tool_use') {
             const tool = evt.part?.tool || 'tool';
             const input = evt.part?.state?.input || {};
             const output = evt.part?.state?.output || '';
             let title = tool;
-            let desc = 'Tool execution completed';
+            let desc = 'Execution completed';
             if (tool === 'read') {
               title = `read ${input.path || ''}`;
-              desc = 'Reading file';
+              desc = 'Inspected workspace file';
             } else if (tool === 'edit') {
               title = `edit ${input.path || ''}`;
-              desc = 'Patching file';
+              desc = 'Updated file';
             } else if (tool === 'write') {
               title = `write ${input.path || ''}`;
-              desc = 'Writing file';
+              desc = 'Wrote file content';
             } else if (tool === 'bash' || tool === 'terminal') {
               title = `$ ${input.command || ''}`;
-              desc = 'Running bash command in .venv';
+              desc = 'Executed command in .venv';
             } else if (tool === 'glob') {
               title = `glob ${input.pattern || ''}`;
-              desc = 'Finding files';
+              desc = 'Scanned files';
             } else if (tool === 'grep') {
               title = `grep "${input.pattern || ''}"`;
-              desc = 'Searching pattern';
+              desc = 'Searched pattern';
             }
 
             onEvent({
@@ -396,7 +389,7 @@ export async function runOpenCodeAgent(
               completionTokens += evt.part.tokens.output || 0;
             }
           } else if (evt.type === 'error') {
-            const errMsg = evt.error?.message || 'OpenCode execution error';
+            const errMsg = evt.error?.message || 'Execution error';
             onEvent({
               type: 'error',
               description: errMsg

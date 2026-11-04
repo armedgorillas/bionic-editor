@@ -266,9 +266,9 @@ apiRouter.get('/agent/config', (_req, res) => {
     isOpenCodeInstalled,
     harness: isOpenCodeInstalled ? 'opencode' : 'built-in',
     availableProviders: [
-      { id: 'gemini', name: isOpenCodeInstalled ? 'Google Gemini (OpenCode)' : 'Google Gemini (Gemini 2.5 Flash / Pro)', active: Boolean(GEMINI_API_KEY) },
-      { id: 'openai', name: isOpenCodeInstalled ? 'OpenAI (OpenCode)' : 'OpenAI (GPT-4o)', active: Boolean(OPENAI_API_KEY) },
-      { id: 'anthropic', name: isOpenCodeInstalled ? 'Anthropic Claude (OpenCode)' : 'Anthropic (Claude 3.5 Sonnet)', active: Boolean(ANTHROPIC_API_KEY) },
+      { id: 'gemini', name: 'Google Gemini (Gemini 2.5 Flash / Pro)', active: Boolean(GEMINI_API_KEY) },
+      { id: 'openai', name: 'OpenAI (GPT-4o)', active: Boolean(OPENAI_API_KEY) },
+      { id: 'anthropic', name: 'Anthropic Claude (3.5 Sonnet)', active: Boolean(ANTHROPIC_API_KEY) },
       { id: 'ollama', name: 'Local Ollama / OpenAI-compatible', active: true },
       { id: 'demo', name: 'Demo / Scientific Assistant (Offline)', active: true }
     ],
