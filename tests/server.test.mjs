@@ -78,16 +78,25 @@ test('Bionic Editor End-to-End Server Suite', async (t) => {
     assert.ok(typeof body.venv.exists === 'boolean');
   });
 
-  await t.test('Returns file tree including SPEC.md and data files', async () => {
+  await t.test('Returns file tree including configured project root file and data folder', async () => {
+    const infoRes = await fetchUrl('/api/workspace/info');
+    assert.equal(infoRes.status, 200);
+    const info = JSON.parse(infoRes.data);
+    const rootFile = info.rootFile || info.baseSpec || 'SPEC.md';
+
     const res = await fetchUrl('/api/files/tree');
     assert.equal(res.status, 200);
     const body = JSON.parse(res.data);
-    const spec = body.tree.find((f) => f.name === 'SPEC.md');
-    assert.ok(spec, 'SPEC.md should exist in file tree');
+    const rootEntry = body.tree.find((f) => f.path === rootFile || f.name === rootFile);
+    assert.ok(rootEntry, `${rootFile} should exist in file tree`);
   });
 
-  await t.test('Can read SPEC.md raw content', async () => {
-    const res = await fetchUrl('/api/files/read?path=SPEC.md');
+  await t.test('Can read configured project root file raw content', async () => {
+    const infoRes = await fetchUrl('/api/workspace/info');
+    const info = JSON.parse(infoRes.data);
+    const rootFile = info.rootFile || info.baseSpec || 'SPEC.md';
+
+    const res = await fetchUrl(`/api/files/read?path=${encodeURIComponent(rootFile)}`);
     assert.equal(res.status, 200);
     const body = JSON.parse(res.data);
     assert.ok(typeof body.content === 'string' && body.content.length > 0);
@@ -166,6 +175,8 @@ test('Bionic Editor End-to-End Server Suite', async (t) => {
     assert.ok(res.data.includes('step_start'));
     assert.ok(res.data.includes('step_done'));
     assert.ok(res.data.includes('final'));
+    const finalMatches = res.data.match(/"type":"final"/g) || [];
+    assert.equal(finalMatches.length, 1, 'SSE stream must emit exactly one final event per turn');
   });
 
   await t.test('AI Agent chat does not prematurely cancel when sessionId is provided', async () => {
@@ -228,6 +239,55 @@ test('Bionic Editor End-to-End Server Suite', async (t) => {
     assert.equal(cancelRes.status, 200);
     const cancelBody = JSON.parse(cancelRes.data);
     assert.equal(cancelBody.success, true);
+  });
+
+  await t.test('New workspace config, data manifest, instructions, subagents, and raw URL decoding endpoints respond cleanly', async () => {
+    const cfgRes = await fetchUrl('/api/workspace/config');
+    assert.equal(cfgRes.status, 200);
+    const cfg = JSON.parse(cfgRes.data);
+    assert.ok(cfg.rootFile);
+
+    const manifestRes = await fetchUrl('/api/data/manifest');
+    assert.equal(manifestRes.status, 200);
+    const manifestBody = JSON.parse(manifestRes.data);
+    assert.ok(Array.isArray(manifestBody.entries));
+
+    const instrRes = await fetchUrl('/api/agent/instructions');
+    assert.equal(instrRes.status, 200);
+    const instrBody = JSON.parse(instrRes.data);
+    assert.equal(typeof instrBody.userInstructions, 'string');
+
+    const subRes = await fetchUrl('/api/agent/subagents');
+    assert.equal(subRes.status, 200);
+    const subBody = JSON.parse(subRes.data);
+    assert.ok(Array.isArray(subBody.jobs));
+    assert.ok(Array.isArray(subBody.availableAgents));
+
+    const syncRes = await fetchUrl('/api/agent/sessions/test_session_123/sync');
+    assert.equal(syncRes.status, 200);
+    const syncBody = JSON.parse(syncRes.data);
+    assert.ok(Array.isArray(syncBody.subagents));
+
+    // Sensitive .env files must be blocked from file read / raw streaming
+    const envReadRes = await fetchUrl('/api/files/read?path=.env');
+    assert.equal(envReadRes.status, 403);
+    const envRawRes = await fetchUrl('/api/files/raw/.env');
+    assert.equal(envRawRes.status, 403);
+
+    // URL-encoded spaces in /api/files/raw
+    await fetchUrl('/api/files/write', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: { path: 'test space file.txt', content: 'space-ok' }
+    });
+    const rawSpaceRes = await fetchUrl('/api/files/raw/test%20space%20file.txt');
+    assert.equal(rawSpaceRes.status, 200);
+    assert.equal(rawSpaceRes.data, 'space-ok');
+    await fetchUrl('/api/files/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: { path: 'test space file.txt' }
+    });
   });
 
   t.after(() => {

@@ -2,16 +2,92 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
+:root,
+[data-theme="light"] {
   --font-editor: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --bg-surface: 255 255 255;
+  --bg-panel: 248 249 250;
+  --bg-elevated: 255 255 255;
+  --border-edge: 226 232 240;
+  --text-ink: 30 41 59;
+  --text-muted: 100 116 139;
+  --color-accent: 37 99 235;
+
+  --tiptap-text: #2d3748;
+  --tiptap-h1: #1a202c;
+  --tiptap-h2: #2d3748;
+  --tiptap-h3: #4a5568;
+  --tiptap-blockquote-border: #cbd5e1;
+  --tiptap-blockquote-text: #64748b;
+  --tiptap-code-bg: #f1f5f9;
+  --tiptap-code-text: #d9480f;
+  --tiptap-pre-text: #334155;
+  --tiptap-hr: #e2e8f0;
+  --tiptap-placeholder: #94a3b8;
+  --tiptap-table-border: #cbd5e1;
+  --tiptap-table-th-bg: #f8fafc;
+  --tiptap-table-th-text: #1e293b;
+  --tiptap-cell-select: rgba(200, 200, 255, 0.4);
+}
+
+[data-theme="warm"] {
+  --bg-surface: 250 247 242;
+  --bg-panel: 244 239 230;
+  --bg-elevated: 253 251 247;
+  --border-edge: 224 214 198;
+  --text-ink: 58 46 36;
+  --text-muted: 120 104 88;
+  --color-accent: 180 83 9;
+
+  --tiptap-text: #3a2e24;
+  --tiptap-h1: #231a12;
+  --tiptap-h2: #34281d;
+  --tiptap-h3: #524234;
+  --tiptap-blockquote-border: #d6c5ad;
+  --tiptap-blockquote-text: #74624e;
+  --tiptap-code-bg: #efe8dc;
+  --tiptap-code-text: #b45309;
+  --tiptap-pre-text: #3d3024;
+  --tiptap-hr: #e0d6c6;
+  --tiptap-placeholder: #a0907d;
+  --tiptap-table-border: #d6c5ad;
+  --tiptap-table-th-bg: #f1eadf;
+  --tiptap-table-th-text: #2a2017;
+  --tiptap-cell-select: rgba(217, 159, 91, 0.25);
+}
+
+[data-theme="dark"] {
+  --bg-surface: 15 17 23;
+  --bg-panel: 22 26 35;
+  --bg-elevated: 29 34 46;
+  --border-edge: 44 52 68;
+  --text-ink: 226 232 240;
+  --text-muted: 148 163 184;
+  --color-accent: 37 99 235;
+
+  --tiptap-text: #e2e8f0;
+  --tiptap-h1: #f8fafc;
+  --tiptap-h2: #e2e8f0;
+  --tiptap-h3: #cbd5e1;
+  --tiptap-blockquote-border: #475569;
+  --tiptap-blockquote-text: #94a3b8;
+  --tiptap-code-bg: #1e2433;
+  --tiptap-code-text: #fb923c;
+  --tiptap-pre-text: #e2e8f0;
+  --tiptap-hr: #2c3444;
+  --tiptap-placeholder: #64748b;
+  --tiptap-table-border: #334155;
+  --tiptap-table-th-bg: #1a202e;
+  --tiptap-table-th-text: #f1f5f9;
+  --tiptap-cell-select: rgba(96, 165, 250, 0.28);
 }
 
 body {
   margin: 0;
   padding: 0;
   font-family: var(--font-editor);
-  background-color: #fbfbfb;
-  color: #2b303a;
+  background-color: rgb(var(--bg-surface));
+  color: rgb(var(--text-ink));
   overflow: hidden;
   height: 100vh;
 }
@@ -29,7 +105,7 @@ body {
   font-family: var(--font-editor);
   font-size: 1.0625rem;
   line-height: 1.7;
-  color: #2d3748;
+  color: var(--tiptap-text);
 }
 
 .tiptap p {
@@ -40,7 +116,7 @@ body {
 .tiptap h1 {
   font-size: 1.9rem;
   font-weight: 700;
-  color: #1a202c;
+  color: var(--tiptap-h1);
   margin-top: 1.4em;
   margin-bottom: 0.5em;
   line-height: 1.25;
@@ -49,7 +125,7 @@ body {
 .tiptap h2 {
   font-size: 1.45rem;
   font-weight: 600;
-  color: #2d3748;
+  color: var(--tiptap-h2);
   margin-top: 1.2em;
   margin-bottom: 0.4em;
   line-height: 1.3;
@@ -58,7 +134,7 @@ body {
 .tiptap h3 {
   font-size: 1.2rem;
   font-weight: 600;
-  color: #4a5568;
+  color: var(--tiptap-h3);
   margin-top: 1em;
   margin-bottom: 0.3em;
 }
@@ -83,16 +159,16 @@ body {
 }
 
 .tiptap blockquote {
-  border-left: 3px solid #cbd5e1;
+  border-left: 3px solid var(--tiptap-blockquote-border);
   padding-left: 1rem;
   margin-left: 0;
   margin-right: 0;
-  color: #64748b;
+  color: var(--tiptap-blockquote-text);
   font-style: italic;
 }
 
 .tiptap pre {
-  background: #f1f5f9;
+  background: var(--tiptap-code-bg);
   border-radius: 6px;
   padding: 0.75rem 1rem;
   font-family: "SF Mono", Menlo, Monaco, Consolas, monospace;
@@ -104,21 +180,21 @@ body {
 .tiptap code {
   font-family: "SF Mono", Menlo, Monaco, Consolas, monospace;
   font-size: 0.875em;
-  background-color: #f1f5f9;
+  background-color: var(--tiptap-code-bg);
   padding: 0.15em 0.35em;
   border-radius: 4px;
-  color: #d9480f;
+  color: var(--tiptap-code-text);
 }
 
 .tiptap pre code {
   background: transparent;
   padding: 0;
-  color: #334155;
+  color: var(--tiptap-pre-text);
 }
 
 .tiptap hr {
   border: none;
-  border-top: 1px solid #e2e8f0;
+  border-top: 1px solid var(--tiptap-hr);
   margin: 1.5rem 0;
 }
 
@@ -127,11 +203,11 @@ body {
   height: auto;
   border-radius: 6px;
   margin: 1rem 0;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
 }
 
 .tiptap p.is-editor-empty:first-child::before {
-  color: #94a3b8;
+  color: var(--tiptap-placeholder);
   content: attr(data-placeholder);
   float: left;
   height: 0;
@@ -149,7 +225,7 @@ body {
 
 .tiptap table td,
 .tiptap table th {
-  border: 1px solid #cbd5e1;
+  border: 1px solid var(--tiptap-table-border);
   box-sizing: border-box;
   min-width: 1em;
   padding: 0.5rem 0.75rem;
@@ -158,14 +234,14 @@ body {
 }
 
 .tiptap table th {
-  background-color: #f8fafc;
+  background-color: var(--tiptap-table-th-bg);
   font-weight: 600;
   text-align: left;
-  color: #1e293b;
+  color: var(--tiptap-table-th-text);
 }
 
 .tiptap table .selectedCell:after {
-  background: rgba(200, 200, 255, 0.4);
+  background: var(--tiptap-cell-select);
   content: "";
   left: 0;
   right: 0;

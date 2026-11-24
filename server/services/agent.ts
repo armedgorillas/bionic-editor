@@ -1,12 +1,21 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { spawn, execSync } from 'child_process';
+import { execSync } from 'child_process';
 import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
-import { OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY, OLLAMA_BASE_URL, WORKSPACE_DIR, BASE_SPEC, getTargetSpawnOptions } from '../config.js';
+import {
+  OPENAI_API_KEY,
+  ANTHROPIC_API_KEY,
+  GEMINI_API_KEY,
+  OLLAMA_BASE_URL,
+  WORKSPACE_DIR
+} from '../config.js';
 import { readFileContent, writeFileContent, getFileTree, resolveSafePath } from './workspace.js';
-import { runPythonScript, runBashCommand, registerSessionProcess } from './venv.js';
+import { runPythonScript, runBashCommand } from './venv.js';
+import { getProjectRootFile } from './workspaceConfig.js';
+import { buildBionicInstructions } from './agentPrompt.js';
+import { opencodeServer, type SubagentJobView } from './opencodeServer.js';
 
 export interface AgentMessage {
   role: 'user' | 'assistant' | 'system' | 'tool';
@@ -32,19 +41,30 @@ export interface TokenUsage {
 }
 
 export interface StepEvent {
-  type: 'step_start' | 'step_progress' | 'step_done' | 'thought' | 'text_delta' | 'final' | 'error';
+  type:
+    | 'step_start'
+    | 'step_progress'
+    | 'step_done'
+    | 'thought'
+    | 'text_delta'
+    | 'subagent_updated'
+    | 'background_turn_start'
+    | 'final'
+    | 'error';
   title?: string;
   description?: string;
   details?: string;
   delta?: string;
   status?: 'running' | 'done' | 'error';
   tokens?: TokenUsage;
+  job?: SubagentJobView;
 }
 
 const cancelledSessions = new Set<string>();
 
 export function cancelAgentSession(sessionId: string): void {
   cancelledSessions.add(sessionId);
+  opencodeServer.interruptSession(sessionId).catch(() => {});
 }
 
 export function clearSessionCancellation(sessionId: string): void {
@@ -55,90 +75,81 @@ export function isSessionCancelled(sessionId: string): boolean {
   return cancelledSessions.has(sessionId);
 }
 
-const SYSTEM_PROMPT = `You are Bionic Editor's Scientific AI Agent—a powerful, transparent coding harness designed for analytical scientists and biologists.
-You collaborate with researchers who understand biology and experimental design, but need your software engineering capabilities to write, execute, inspect, and debug reproducible pipelines.
-
-HOW YOU OPERATE AS A CODING HARNESS:
-1. Always state your reasoning and plan clearly before and during tool use. Explain what hypothesis you are testing, which file you are inspecting, and why you are running a command.
-2. When executing bash or Python scripts, inspect stdout and stderr carefully. If any error, syntax issue, or non-zero exit code occurs, analyze the traceback thoroughly, explain what went wrong, and take corrective action (such as fixing syntax, installing dependencies, or fixing data file paths).
-3. Be transparent and rigorous: show your computational logic so the scientist can audit and verify the work.
-4. When refining the experimental protocol, modify ${BASE_SPEC} directly.
-5. When writing Python code, place reproducible scripts in src/ and run them using the isolated virtual environment.
-6. Always save processed datasets to data/processed/ and interactive HTML reports to web-report/index.html.`;
-
-const TOOLS_SCHEMA_OPENAI: OpenAI.Chat.Completions.ChatCompletionTool[] = [
-  {
-    type: 'function',
-    function: {
-      name: 'read_file',
-      description: 'Read the text content of a file in the workspace.',
-      parameters: {
-        type: 'object',
-        properties: {
-          path: { type: 'string', description: `Relative path to file, e.g. ${BASE_SPEC} or src/analyze.py` }
-        },
-        required: ['path']
+function getToolsSchemaOpenAI(rootFile: string): OpenAI.Chat.Completions.ChatCompletionTool[] {
+  return [
+    {
+      type: 'function',
+      function: {
+        name: 'read_file',
+        description: 'Read the text content of a file in the workspace.',
+        parameters: {
+          type: 'object',
+          properties: {
+            path: { type: 'string', description: `Relative path to file, e.g. ${rootFile} or code/analyze.py` }
+          },
+          required: ['path']
+        }
       }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'write_file',
-      description: 'Write or overwrite text content to a file in the workspace.',
-      parameters: {
-        type: 'object',
-        properties: {
-          path: { type: 'string', description: `Relative path to file, e.g. ${BASE_SPEC} or web-report/index.html` },
-          content: { type: 'string', description: 'Full text content to write' }
-        },
-        required: ['path', 'content']
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'write_file',
+        description: 'Write or overwrite text content to a file in the workspace.',
+        parameters: {
+          type: 'object',
+          properties: {
+            path: { type: 'string', description: `Relative path to file, e.g. ${rootFile} or web-report/index.html` },
+            content: { type: 'string', description: 'Full text content to write' }
+          },
+          required: ['path', 'content']
+        }
       }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'list_files',
-      description: 'List files and directories in the workspace.',
-      parameters: {
-        type: 'object',
-        properties: {
-          directory: { type: 'string', description: 'Optional relative directory path, defaults to workspace root' }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'list_files',
+        description: 'List files and directories in the workspace.',
+        parameters: {
+          type: 'object',
+          properties: {
+            directory: { type: 'string', description: 'Optional relative directory path, defaults to workspace root' }
+          }
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'run_python',
+        description: 'Execute a Python script using the project virtual environment.',
+        parameters: {
+          type: 'object',
+          properties: {
+            script_path: { type: 'string', description: 'Relative path to script, e.g. code/analyze.py' },
+            args: { type: 'array', items: { type: 'string' }, description: 'Optional command line arguments' }
+          },
+          required: ['script_path']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'run_command',
+        description: 'Run a shell command in the project directory using the virtual environment.',
+        parameters: {
+          type: 'object',
+          properties: {
+            command: { type: 'string', description: 'Shell command, e.g. pip list or python -c "..."' }
+          },
+          required: ['command']
         }
       }
     }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'run_python',
-      description: 'Execute a Python script using the project virtual environment.',
-      parameters: {
-        type: 'object',
-        properties: {
-          script_path: { type: 'string', description: 'Relative path to script, e.g. src/analyze.py' },
-          args: { type: 'array', items: { type: 'string' }, description: 'Optional command line arguments' }
-        },
-        required: ['script_path']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'run_command',
-      description: 'Run a shell command in the project directory using the virtual environment.',
-      parameters: {
-        type: 'object',
-        properties: {
-          command: { type: 'string', description: 'Shell command, e.g. pip list or python -c "..."' }
-        },
-        required: ['command']
-      }
-    }
-  }
-];
+  ];
+}
 
 export interface DetailedToolResult {
   output: string;
@@ -161,14 +172,14 @@ export async function executeToolDetailed(name: string, args: any, sessionId?: s
       }
       case 'write_file': {
         writeFileContent(args.path, args.content);
-        return { 
+        return {
           output: `Successfully wrote ${args.content?.length || 0} characters to ${args.path}`,
-          isError: false 
+          isError: false
         };
       }
       case 'list_files': {
         const dir = args.directory || '';
-        const items = getFileTree(dir ? resolveSafePath(dir) : WORKSPACE_DIR, dir);
+        const items = getFileTree(dir ? resolveSafePath(dir) : WORKSPACE_DIR, dir, { includeDotItems: false });
         return {
           output: JSON.stringify(items.map(i => ({ name: i.name, path: i.path, isDir: i.isDirectory })), null, 2),
           isError: false
@@ -209,12 +220,10 @@ export async function executeToolDetailed(name: string, args: any, sessionId?: s
 }
 
 export function estimateCost(promptTokens: number, completionTokens: number, model: string = 'gpt-4o'): number {
-  // Pricing estimate per 1M tokens
-  let inputRate = 2.50; // $2.50 per 1M default
-  let outputRate = 10.00; // $10 per 1M default
+  let inputRate = 2.50;
+  let outputRate = 10.00;
 
   if (model.includes('flash')) {
-    // Gemini Flash: $0.075 / 1M prompt, $0.30 / 1M completion
     inputRate = 0.075;
     outputRate = 0.30;
   } else if (model.includes('gemini') && model.includes('pro')) {
@@ -256,196 +265,13 @@ export async function runOpenCodeAgent(
     throw new Error('OpenCode executable not found. Please install OpenCode (https://opencode.ai).');
   }
 
-  // Get the last user message
   const lastUserMsg = [...messages].reverse().find(m => m.role === 'user')?.content || '';
   if (!lastUserMsg.trim()) {
     return { text: 'No message provided.', tokens: { promptTokens: 0, completionTokens: 0, totalTokens: 0, estimatedCostUsd: 0 } };
   }
 
-  // Session ID must start with ses_
-  const rawSessionId = config.sessionId || `bionic_${Date.now()}`;
-  const opencodeSessionId = rawSessionId.startsWith('ses_') ? rawSessionId : `ses_${rawSessionId}`;
-
-  // Map model name
-  let model = config.model;
-  if (!model) {
-    if (config.provider === 'gemini') {
-      model = 'google/gemini-3.8-flash';
-    } else if (config.provider === 'openai') {
-      model = 'openai/gpt-4o';
-    } else if (config.provider === 'anthropic') {
-      model = 'anthropic/claude-3.5-sonnet';
-    } else if (config.provider === 'ollama') {
-      model = 'ollama/llama3';
-    } else {
-      model = 'google/gemini-3.8-flash';
-    }
-  } else if (!model.includes('/')) {
-    if (config.provider === 'gemini') {
-      model = model === 'gemini-2.5-flash' || model === 'gemini-2.5-pro' ? 'google/gemini-3.8-flash' : `google/${model}`;
-    } else if (config.provider === 'openai') {
-      model = `openai/${model}`;
-    } else if (config.provider === 'anthropic') {
-      model = `anthropic/${model}`;
-    } else if (config.provider === 'ollama') {
-      model = `ollama/${model}`;
-    }
-  }
-
-  const args = [
-    'run',
-    '--format', 'json',
-    '--auto',
-    '--thinking',
-    '--session', opencodeSessionId,
-    '--model', model,
-    lastUserMsg
-  ];
-
-  const extraEnv: Record<string, string> = {};
-  const geminiKey = config.apiKey || GEMINI_API_KEY;
-  if (geminiKey) {
-    extraEnv.GEMINI_API_KEY = geminiKey;
-    extraEnv.GOOGLE_API_KEY = geminiKey;
-  }
-  const openaiKey = config.apiKey || OPENAI_API_KEY;
-  if (openaiKey) {
-    extraEnv.OPENAI_API_KEY = openaiKey;
-  }
-  const anthropicKey = config.apiKey || ANTHROPIC_API_KEY;
-  if (anthropicKey) {
-    extraEnv.ANTHROPIC_API_KEY = anthropicKey;
-  }
-
-  const spawnOpts = getTargetSpawnOptions(extraEnv);
-
-  return new Promise((resolve, reject) => {
-    const proc = spawn(opencodeBin, args, {
-      cwd: WORKSPACE_DIR,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      ...spawnOpts
-    });
-
-    const unregister = config.sessionId ? registerSessionProcess(config.sessionId, proc) : null;
-
-    let accumulatedText = '';
-    let promptTokens = 0;
-    let completionTokens = 0;
-    let stdoutBuffer = '';
-    let stderrBuffer = '';
-
-    proc.stdout.on('data', (chunk) => {
-      stdoutBuffer += chunk.toString();
-      const lines = stdoutBuffer.split('\n');
-      stdoutBuffer = lines.pop() || '';
-
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        try {
-          const evt = JSON.parse(line.trim());
-          if (evt.type === 'tool_use') {
-            const tool = evt.part?.tool || 'tool';
-            const input = evt.part?.state?.input || {};
-            const output = evt.part?.state?.output || '';
-            let title = tool;
-            let desc = 'Execution completed';
-            if (tool === 'read') {
-              title = `read ${input.path || ''}`;
-              desc = 'Inspected workspace file';
-            } else if (tool === 'edit') {
-              title = `edit ${input.path || ''}`;
-              desc = 'Updated file';
-            } else if (tool === 'write') {
-              title = `write ${input.path || ''}`;
-              desc = 'Wrote file content';
-            } else if (tool === 'bash' || tool === 'terminal') {
-              title = `$ ${input.command || ''}`;
-              desc = 'Executed command in .venv';
-            } else if (tool === 'glob') {
-              title = `glob ${input.pattern || ''}`;
-              desc = 'Scanned files';
-            } else if (tool === 'grep') {
-              title = `grep "${input.pattern || ''}"`;
-              desc = 'Searched pattern';
-            }
-
-            onEvent({
-              type: 'step_done',
-              title,
-              description: desc,
-              details: typeof output === 'string' ? output : JSON.stringify(output, null, 2),
-              status: 'done'
-            });
-          } else if (evt.type === 'text') {
-            const textDelta = evt.part?.text || '';
-            accumulatedText += textDelta;
-            onEvent({
-              type: 'thought',
-              delta: textDelta
-            });
-          } else if (evt.type === 'step_finish') {
-            if (evt.part?.tokens) {
-              promptTokens += evt.part.tokens.input || 0;
-              completionTokens += evt.part.tokens.output || 0;
-            }
-          } else if (evt.type === 'error') {
-            const errMsg = evt.error?.message || 'Execution error';
-            onEvent({
-              type: 'error',
-              description: errMsg
-            });
-          }
-        } catch {
-          // ignore non-json lines
-        }
-      }
-    });
-
-    proc.stderr.on('data', (chunk) => {
-      stderrBuffer += chunk.toString();
-    });
-
-    proc.on('close', (code) => {
-      if (unregister) unregister();
-
-      // Flush remaining stdout buffer
-      if (stdoutBuffer.trim()) {
-        try {
-          const evt = JSON.parse(stdoutBuffer.trim());
-          if (evt.type === 'text' && evt.part?.text) {
-            accumulatedText += evt.part.text;
-          }
-        } catch {}
-      }
-
-      if (config.sessionId && isSessionCancelled(config.sessionId)) {
-        accumulatedText = 'Execution was cancelled.';
-      } else if (!accumulatedText.trim() && code !== 0) {
-        accumulatedText = `OpenCode process exited with code ${code}.${stderrBuffer ? '\n' + stderrBuffer : ''}`;
-      }
-
-      const totalToks = promptTokens + completionTokens;
-      const tokens: TokenUsage = {
-        promptTokens,
-        completionTokens,
-        totalTokens: totalToks,
-        estimatedCostUsd: estimateCost(promptTokens, completionTokens, model || 'gpt-4o')
-      };
-
-      onEvent({
-        type: 'final',
-        delta: accumulatedText,
-        tokens
-      });
-
-      resolve({ text: accumulatedText, tokens });
-    });
-
-    proc.on('error', (err) => {
-      if (unregister) unregister();
-      reject(err);
-    });
-  });
+  const bionicSessionId = config.sessionId || `bionic_${Date.now()}`;
+  return opencodeServer.promptSession(opencodeBin, bionicSessionId, lastUserMsg, config, onEvent);
 }
 
 export async function runAgentConversation(
@@ -462,7 +288,7 @@ export async function runAgentConversation(
       return await handleDemoAgent(messages, onEvent);
     }
 
-    // Use OpenCode harness when available!
+    // Use Bionic-managed OpenCode V2 server bridge when available!
     const opencodeBin = getOpenCodeBinary();
     if (opencodeBin && process.env.USE_OPENCODE !== 'false') {
       return await runOpenCodeAgent(messages, config, onEvent);
@@ -515,10 +341,11 @@ async function handleDemoAgent(
   messages: AgentMessage[],
   onEvent: (event: StepEvent) => void
 ): Promise<{ text: string; tokens: TokenUsage }> {
+  const rootFile = getProjectRootFile();
   const lastUserMsg = [...messages].reverse().find(m => m.role === 'user')?.content || '';
   const lower = lastUserMsg.toLowerCase();
 
-  let tokens: TokenUsage = {
+  const tokens: TokenUsage = {
     promptTokens: 450,
     completionTokens: 210,
     totalTokens: 660,
@@ -526,88 +353,87 @@ async function handleDemoAgent(
   };
 
   if (lower.includes('run') || lower.includes('analyze') || lower.includes('script') || lower.includes('pipeline')) {
+    const candidateScript = ['code/analyze.py', 'src/analyze.py'].find((p) =>
+      fs.existsSync(path.join(WORKSPACE_DIR, p))
+    );
+
     onEvent({
       type: 'step_start',
-      title: 'Reading Analysis Script',
-      description: 'Inspecting src/analyze.py and verifying data files...'
+      title: candidateScript ? `Inspecting ${candidateScript}` : 'Checking workspace scripts',
+      description: candidateScript
+        ? `Checking ${candidateScript} and data files...`
+        : 'Scanning code/ and data/raw/ for analysis scripts...'
     });
-    await new Promise(r => setTimeout(r, 600));
+    await new Promise(r => setTimeout(r, 300));
 
-    const toolResult = await executeTool('run_python', { script_path: 'src/analyze.py' });
+    if (candidateScript) {
+      const toolResult = await executeTool('run_python', { script_path: candidateScript });
+      onEvent({
+        type: 'step_done',
+        title: `Executed ${candidateScript}`,
+        description: `Ran ${candidateScript} inside isolated virtual environment.`,
+        details: toolResult
+      });
+
+      const reply = `- Ran \`${candidateScript}\` inside \`.venv\`.\n` +
+        `- Review outputs in \`data/processed/\` and your publication in **Web Report** (\`web-report/index.html\`).\n` +
+        `- Document key takeaways in \`${rootFile}\` or \`RESULTS.md\`.`;
+
+      return { text: reply, tokens };
+    }
+
     onEvent({
       type: 'step_done',
-      title: 'Executed Python Analysis',
-      description: 'Successfully ran src/analyze.py inside isolated virtual environment.',
-      details: toolResult
+      title: 'Workspace Ready for Pipeline',
+      description: 'No analysis script found in code/ yet.'
     });
 
-    const reply = `I have executed the scientific analysis pipeline (\`src/analyze.py\`) within your project's virtual environment.\n\n` +
-      `**Summary of actions:**\n` +
-      `- Loaded gene expression data from \`data/raw/gene_expression_sample.csv\`\n` +
-      `- Calculated control and treatment replicate means\n` +
-      `- Computed Log2 Fold Changes across all biomarker candidates\n` +
-      `- Stored results in \`data/processed/deg_results.csv\`\n\n` +
-      `You can inspect the generated table in the file explorer, or preview the interactive visual dashboard in the **Web Report** tab.`;
+    const reply = `- No analysis script exists in \`code/\` yet.\n` +
+      `- Upload raw datasets into \`data/raw/\` (tracked in **Data Provenance** / \`data/DATA_MANIFEST.md\`) and outline your plan in \`${rootFile}\`.\n` +
+      `- Connect a live AI model in Settings to generate scripts in \`code/\` and scientific tests in \`tests/scientific/\`.`;
 
-    onEvent({ type: 'final', delta: reply, tokens });
     return { text: reply, tokens };
   }
 
   if (lower.includes('spec') || lower.includes('plan') || lower.includes('hypothesis') || lower.includes('update')) {
     onEvent({
       type: 'step_start',
-      title: 'Reading Experiment Plan',
-      description: `Checking ${BASE_SPEC} for existing hypotheses and objectives...`
+      title: `Reading ${rootFile}`,
+      description: `Checking ${rootFile} for Research Question, Data Sourcing, Processing, Display, and Tests...`
     });
-    await new Promise(r => setTimeout(r, 500));
-
-    onEvent({
-      type: 'step_progress',
-      title: 'Fleshing out Analysis Plan',
-      description: 'Adding statistical validation parameters and QC checkpoints...'
-    });
-    await new Promise(r => setTimeout(r, 600));
+    await new Promise(r => setTimeout(r, 300));
 
     onEvent({
       type: 'step_done',
-      title: 'Plan Updated',
-      description: `Updated ${BASE_SPEC} with refined hypotheses and methodology.`
+      title: 'Plan Checked',
+      description: `Reviewed ${rootFile} against the 5-section scientific plan format.`
     });
 
-    const reply = `I have reviewed and refined your scientific specification in \`${BASE_SPEC}\`.\n\n` +
-      `**Key additions:**\n` +
-      `- Added specific statistical thresholding criteria (Benjamini-Hochberg FDR < 0.05, |Log2FC| > 1.0)\n` +
-      `- Defined quality control steps for replicate variance\n` +
-      `- Scheduled automated visual synthesis into \`web-report/index.html\`\n\n` +
-      `Take a look at the editor on your left to review the plan. Let me know if you would like me to proceed with running the analysis!`;
+    const reply = `- Reviewed \`${rootFile}\`.\n` +
+      `- Organize sections under **Research Question**, **Data Sourcing**, **Data Processing**, **Data Display**, and **Tests** (\`tests/scientific/\`).\n` +
+      `- If you add more than 3 Markdown files in the root folder, consider moving additional plans into \`plans/\`.`;
 
-    onEvent({ type: 'final', delta: reply, tokens });
     return { text: reply, tokens };
   }
 
-  // General scientific assistant response
   onEvent({
     type: 'step_start',
     title: 'Scanning Workspace',
     description: 'Scanning project files and virtual environment status...'
   });
-  await new Promise(r => setTimeout(r, 500));
+  await new Promise(r => setTimeout(r, 250));
 
   const files = getFileTree(WORKSPACE_DIR);
   onEvent({
     type: 'step_done',
     title: 'Workspace Ready',
-    description: `Found ${files.length} top-level directories/files ready for analysis.`
+    description: `Found ${files.length} top-level entries ready for analysis.`
   });
 
-  const reply = `Hello! I am your Bionic Editor Scientific Assistant.\n\n` +
-    `I can help you:\n` +
-    `1. **Draft & Refine Plans**: Write or edit hypotheses in \`${BASE_SPEC}\`.\n` +
-    `2. **Analyze Data**: Run Python analyses on datasets in \`data/raw/\` using your isolated virtual environment.\n` +
-    `3. **Generate Reports**: Build interactive charts and summaries viewable in the **Web Report** panel.\n\n` +
-    `How would you like to start? For example, you can ask me to *"Analyze the gene expression sample"* or *"Flesh out the ${BASE_SPEC} plan"*!`;
+  const reply = `- Workspace scanned (${files.length} top-level items).\n` +
+    `- Manage your analysis plan in \`${rootFile}\` (additional plans belong in \`plans/\`).\n` +
+    `- Keep raw datasets in \`data/raw/\` (registered in \`data/DATA_MANIFEST.md\`) and scripts in \`code/\`.`;
 
-  onEvent({ type: 'final', delta: reply, tokens });
   return { text: reply, tokens };
 }
 
@@ -621,8 +447,12 @@ async function runOpenAILoop(
   let promptTokens = 0;
   let completionTokens = 0;
 
+  const rootFile = getProjectRootFile();
+  const systemPrompt = buildBionicInstructions(rootFile);
+  const toolsSchema = getToolsSchemaOpenAI(rootFile);
+
   const conversation: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
-    { role: 'system', content: SYSTEM_PROMPT },
+    { role: 'system', content: systemPrompt },
     ...messages.map(m => {
       if (m.role === 'tool') {
         return {
@@ -647,7 +477,6 @@ async function runOpenAILoop(
 
   let turns = 0;
   let finalText = '';
-  // Removed restriction on 25 turns: runs without turn limit unless explicitly configured
   const maxTurnsLimit = typeof config.maxTurns === 'number' && config.maxTurns > 0
     ? config.maxTurns
     : (process.env.MAX_TURNS ? parseInt(process.env.MAX_TURNS, 10) : Infinity);
@@ -661,7 +490,7 @@ async function runOpenAILoop(
     const response = await client.chat.completions.create({
       model,
       messages: conversation,
-      tools: TOOLS_SCHEMA_OPENAI,
+      tools: toolsSchema,
       tool_choice: 'auto'
     });
 
@@ -672,23 +501,15 @@ async function runOpenAILoop(
       completionTokens += usage.completion_tokens;
     }
 
-    const currentUsage: TokenUsage = {
-      promptTokens,
-      completionTokens,
-      totalTokens: promptTokens + completionTokens,
-      estimatedCostUsd: estimateCost(promptTokens, completionTokens, model)
-    };
-
-    // If the model produced thought/reasoning text before tool calls, emit it live
-    const thoughtText = choice.message.content;
-    if (thoughtText && thoughtText.trim()) {
-      onEvent({
-        type: 'thought',
-        delta: thoughtText.trim()
-      });
-    }
-
     if (choice.message.tool_calls && choice.message.tool_calls.length > 0) {
+      const thoughtText = choice.message.content;
+      if (thoughtText && thoughtText.trim()) {
+        onEvent({
+          type: 'thought',
+          delta: thoughtText.trim()
+        });
+      }
+
       conversation.push(choice.message);
 
       let wasCancelled = false;
@@ -708,7 +529,6 @@ async function runOpenAILoop(
           fnArgs = {};
         }
 
-        // Generate clean, developer-harness style titles and descriptions
         let title = fnName;
         let desc = 'Executing action...';
 
@@ -741,10 +561,10 @@ async function runOpenAILoop(
         onEvent({
           type: 'step_done',
           title,
-          description: result.isError 
-            ? `Failed (Exit code ${result.exitCode ?? 1})` 
+          description: result.isError
+            ? `Failed (Exit code ${result.exitCode ?? 1})`
             : 'Execution completed',
-          details: result.output, // Full unabridged output, NO truncation!
+          details: result.output,
           status: result.isError ? 'error' : 'done'
         });
 
@@ -766,11 +586,6 @@ async function runOpenAILoop(
       }
     } else {
       finalText = choice.message.content || '';
-      onEvent({
-        type: 'final',
-        delta: finalText,
-        tokens: currentUsage
-      });
       break;
     }
   }
@@ -779,16 +594,6 @@ async function runOpenAILoop(
     finalText = turns >= maxTurnsLimit
       ? `Completed task steps (reached ${maxTurnsLimit} turn limit). You can prompt me to continue with further analysis if needed.`
       : 'Task completed.';
-    onEvent({
-      type: 'final',
-      delta: finalText,
-      tokens: {
-        promptTokens,
-        completionTokens,
-        totalTokens: promptTokens + completionTokens,
-        estimatedCostUsd: estimateCost(promptTokens, completionTokens, model)
-      }
-    });
   }
 
   const finalUsage: TokenUsage = {
@@ -828,7 +633,6 @@ async function handleGeminiAgent(
     throw new Error('Gemini API key is not configured. Please enter your Gemini API key in settings.');
   }
 
-  // Google Gemini OpenAI-compatible official endpoint
   const baseURL = 'https://generativelanguage.googleapis.com/v1beta/openai/';
   const model = config.model || 'gemini-2.5-flash';
 
@@ -852,8 +656,11 @@ async function handleAnthropicAgent(
 
   const client = new Anthropic({ apiKey });
   const model = config.model || 'claude-3-5-sonnet-20241022';
+  const rootFile = getProjectRootFile();
+  const systemPrompt = buildBionicInstructions(rootFile);
+  const toolsSchema = getToolsSchemaOpenAI(rootFile);
 
-  const tools: Anthropic.Tool[] = TOOLS_SCHEMA_OPENAI.map((t: any) => ({
+  const tools: Anthropic.Tool[] = toolsSchema.map((t: any) => ({
     name: t.function.name,
     description: t.function.description || '',
     input_schema: t.function.parameters as Anthropic.Tool.InputSchema
@@ -868,31 +675,52 @@ async function handleAnthropicAgent(
 
   let promptTokens = 0;
   let completionTokens = 0;
+  let finalText = '';
+  const maxTurnsLimit = typeof config.maxTurns === 'number' && config.maxTurns > 0
+    ? config.maxTurns
+    : (process.env.MAX_TURNS ? parseInt(process.env.MAX_TURNS, 10) : 25);
 
-  const response = await client.messages.create({
-    model,
-    max_tokens: 2048,
-    system: SYSTEM_PROMPT,
-    messages: anthropicMessages,
-    tools
-  });
-
-  promptTokens += response.usage.input_tokens;
-  completionTokens += response.usage.output_tokens;
-
-  let textOutput = '';
-  for (const block of response.content) {
+  for (let turn = 0; turn < maxTurnsLimit; turn++) {
     if (config.sessionId && isSessionCancelled(config.sessionId)) {
-      textOutput = 'Execution was cancelled.';
+      finalText = 'Execution was cancelled.';
       break;
     }
-    if (block.type === 'text') {
-      textOutput += block.text;
-      onEvent({
-        type: 'thought',
-        delta: block.text
-      });
-    } else if (block.type === 'tool_use') {
+
+    const response = await client.messages.create({
+      model,
+      max_tokens: 4096,
+      system: systemPrompt,
+      messages: anthropicMessages,
+      tools
+    });
+
+    promptTokens += response.usage.input_tokens;
+    completionTokens += response.usage.output_tokens;
+
+    const toolUses = response.content.filter((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use');
+    const textBlocks = response.content.filter((b): b is Anthropic.TextBlock => b.type === 'text');
+    const turnText = textBlocks.map(b => b.text).join('\n').trim();
+
+    if (toolUses.length === 0) {
+      finalText = turnText;
+      break;
+    }
+
+    if (turnText) {
+      onEvent({ type: 'thought', delta: turnText });
+    }
+
+    anthropicMessages.push({
+      role: 'assistant',
+      content: response.content
+    });
+
+    const toolResults: Anthropic.ToolResultBlockParam[] = [];
+    for (const block of toolUses) {
+      if (config.sessionId && isSessionCancelled(config.sessionId)) {
+        finalText = 'Execution was cancelled.';
+        break;
+      }
       const toolName = block.name;
       const input = block.input as any;
       let title = toolName;
@@ -918,11 +746,22 @@ async function handleAnthropicAgent(
         status: res.isError ? 'error' : 'done'
       });
 
-      if (config.sessionId && isSessionCancelled(config.sessionId)) {
-        textOutput = 'Execution was cancelled.';
-        break;
-      }
+      toolResults.push({
+        type: 'tool_result',
+        tool_use_id: block.id,
+        content: res.output,
+        is_error: res.isError
+      });
     }
+
+    if (config.sessionId && isSessionCancelled(config.sessionId)) {
+      break;
+    }
+
+    anthropicMessages.push({
+      role: 'user',
+      content: toolResults
+    });
   }
 
   const tokens: TokenUsage = {
@@ -932,11 +771,5 @@ async function handleAnthropicAgent(
     estimatedCostUsd: estimateCost(promptTokens, completionTokens, model)
   };
 
-  onEvent({
-    type: 'final',
-    delta: textOutput,
-    tokens
-  });
-
-  return { text: textOutput, tokens };
+  return { text: finalText || 'Task completed.', tokens };
 }

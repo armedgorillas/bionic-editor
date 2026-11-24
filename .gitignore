@@ -31,6 +31,10 @@ dist-release/
 workspace/.bionic/sessions/*.json
 !workspace/.bionic/sessions/.gitkeep
 .bionic/
+!workspace/.bionic/
+workspace/.bionic/*
+!workspace/.bionic/.gitkeep
+!workspace/.bionic/config.json
 
 # OS artifacts
 .DS_Store
