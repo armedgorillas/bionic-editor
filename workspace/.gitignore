@@ -1,5 +1,16 @@
+# BEGIN BIONIC MANAGED
 .venv/
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
 .DS_Store
+.env
+.env.*
+!.env.example
+.bionic/sessions/
+# Raw data files (tracked via data/manifest.json, not Git)
+data/raw/*
+!data/raw/.gitkeep
+!data/manifest.json
+!data/DATA_MANIFEST.md
+# END BIONIC MANAGED

@@ -6,7 +6,17 @@ import cors from 'cors';
 import { WebSocketServer, WebSocket } from 'ws';
 import multer from 'multer';
 
-import { PORT, HOST, WORKSPACE_DIR, PACKAGE_ROOT, OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY, OLLAMA_BASE_URL, updateConfigKeys, BASE_URL, BASE_SPEC } from './config.js';
+import {
+  PORT,
+  HOST,
+  WORKSPACE_DIR,
+  PACKAGE_ROOT,
+  OPENAI_API_KEY,
+  ANTHROPIC_API_KEY,
+  GEMINI_API_KEY,
+  updateConfigKeys,
+  BASE_URL
+} from './config.js';
 import {
   ensureWorkspaceDir,
   initDefaultTemplate,
@@ -16,8 +26,33 @@ import {
   createItem,
   renameItem,
   deleteItem,
-  resolveSafePath
+  resolveSafePath,
+  ensureDirWithOwnership,
+  applyTargetOwnership
 } from './services/workspace.js';
+import {
+  getProjectRootFile,
+  getResolvedWorkspaceConfig,
+  updateWorkspaceConfig
+} from './services/workspaceConfig.js';
+import { readUserInstructions, writeUserInstructions } from './services/agentPrompt.js';
+import { refreshManagedSystemPrompt } from './services/opencodeConfig.js';
+import {
+  isSensitiveEnvPath
+} from './services/fsSafe.js';
+import {
+  getManifestSummary,
+  registerDataFile,
+  verifyManifest,
+  removeManifestEntry,
+  untrackRawFromGit,
+  findManifestEntryByPath,
+  updateManifestFilepath,
+  readManifest,
+  syncManifestArtifacts,
+  wasManifestWrittenInternallyRecently,
+  MANIFEST_REL_PATH
+} from './services/dataManifest.js';
 import {
   getVenvStatus,
   createVenv,
@@ -26,7 +61,8 @@ import {
   killSessionProcesses
 } from './services/venv.js';
 import { runAgentConversation, StepEvent, cancelAgentSession, getOpenCodeBinary } from './services/agent.js';
-import { initFileWatcher } from './services/fileWatcher.js';
+import { opencodeServer } from './services/opencodeServer.js';
+import { initFileWatcher, closeFileWatcher } from './services/fileWatcher.js';
 import { TerminalSession } from './services/terminal.js';
 import {
   listSessions,
@@ -35,7 +71,7 @@ import {
   deleteSession
 } from './services/sessionManager.js';
 
-// Initialize workspace on start
+// Initialize workspace on start (non-destructive if already populated)
 ensureWorkspaceDir();
 
 const app = express();
@@ -73,21 +109,62 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// Multer upload config
+// WebSocket client set & broadcast helper
+interface ExtWebSocket extends WebSocket {
+  isAlive?: boolean;
+}
+const activeClients = new Set<ExtWebSocket>();
+
+function broadcastWs(payloadObj: Record<string, any>): void {
+  const payload = JSON.stringify(payloadObj);
+  for (const client of activeClients) {
+    if (client.readyState === WebSocket.OPEN) {
+      try {
+        client.send(payload);
+      } catch {
+        activeClients.delete(client);
+      }
+    } else if (client.readyState === WebSocket.CLOSED || client.readyState === WebSocket.CLOSING) {
+      activeClients.delete(client);
+    }
+  }
+}
+
+// Connect OpenCode persistent server bridge to WebSocket broadcast
+opencodeServer.setBroadcast((evt) => {
+  broadcastWs(evt);
+});
+
+// Hardened Multer upload config (sanitizes filename + blocks escaping symlinks + caps size)
+const MAX_UPLOAD_BYTES = parseInt(process.env.MAX_UPLOAD_MB || '500', 10) * 1024 * 1024;
 const storage = multer.diskStorage({
   destination: (req, _file, cb) => {
-    const targetDir = req.query.dir ? String(req.query.dir) : '';
-    const safeTarget = targetDir ? resolveSafePath(targetDir) : WORKSPACE_DIR;
-    if (!fs.existsSync(safeTarget)) {
-      fs.mkdirSync(safeTarget, { recursive: true });
+    try {
+      const targetDir = req.query.dir ? String(req.query.dir) : '';
+      const safeTarget = targetDir ? resolveSafePath(targetDir) : WORKSPACE_DIR;
+      ensureDirWithOwnership(safeTarget);
+      cb(null, safeTarget);
+    } catch (err: any) {
+      cb(err, WORKSPACE_DIR);
     }
-    cb(null, safeTarget);
   },
-  filename: (_req, file, cb) => {
-    cb(null, file.originalname);
+  filename: (req, file, cb) => {
+    try {
+      const clean = path.basename(file.originalname || '').replace(/[\0\/\\]/g, '').trim();
+      if (!clean || clean === '.' || clean === '..') {
+        return cb(new Error('Invalid upload filename'), '');
+      }
+      const targetDir = req.query.dir ? String(req.query.dir) : '';
+      const relCandidate = targetDir ? path.join(targetDir, clean) : clean;
+      // Reject if destination is a symlink pointing outside WORKSPACE_DIR
+      resolveSafePath(relCandidate);
+      cb(null, clean);
+    } catch (err: any) {
+      cb(err, '');
+    }
   }
 });
-const upload = multer({ storage });
+const upload = multer({ storage, limits: { fileSize: MAX_UPLOAD_BYTES } });
 
 // Web Report static server - direct single-port serving
 const webReportDir = path.join(WORKSPACE_DIR, 'web-report');
@@ -98,14 +175,54 @@ if (BASE_URL) {
 
 const apiRouter = express.Router();
 
-// Workspace info
+// Workspace info & dynamic configuration (Feature 7)
 apiRouter.get('/workspace/info', (_req, res) => {
+  const cfg = getResolvedWorkspaceConfig();
   res.json({
     workspaceDir: WORKSPACE_DIR,
     venv: getVenvStatus(),
-    baseSpec: BASE_SPEC,
+    rootFile: cfg.rootFile,
+    baseSpec: cfg.baseSpec,
+    rootFileSource: cfg.source,
     baseUrl: BASE_URL
   });
+});
+
+apiRouter.get('/workspace/config', (_req, res) => {
+  try {
+    res.json(getResolvedWorkspaceConfig());
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+apiRouter.put('/workspace/config', (req, res) => {
+  try {
+    const { rootFile, createIfMissing } = req.body || {};
+    if (rootFile !== undefined && typeof rootFile !== 'string') {
+      return res.status(400).json({ error: 'rootFile must be a string' });
+    }
+    const updated = updateWorkspaceConfig({
+      rootFile,
+      createIfMissing: Boolean(createIfMissing)
+    });
+    // Refresh managed system prompt if .bionic/SYSTEM_PROMPT.md already exists
+    try {
+      const sysPromptPath = path.join(WORKSPACE_DIR, '.bionic', 'SYSTEM_PROMPT.md');
+      if (fs.existsSync(sysPromptPath)) {
+        refreshManagedSystemPrompt();
+      }
+    } catch {}
+    broadcastWs({
+      type: 'workspace_config_updated',
+      rootFile: updated.rootFile,
+      baseSpec: updated.baseSpec,
+      source: updated.source
+    });
+    res.json(updated);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
 });
 
 // Reinitialize default template
@@ -119,9 +236,10 @@ apiRouter.post('/workspace/init', (_req, res) => {
 });
 
 // File explorer endpoints
-apiRouter.get('/files/tree', (_req, res) => {
+apiRouter.get('/files/tree', (req, res) => {
   try {
-    const tree = getFileTree();
+    const includeDotItems = req.query.includeDotItems === 'true';
+    const tree = getFileTree(WORKSPACE_DIR, '', { includeDotItems });
     res.json({ tree });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -132,6 +250,9 @@ apiRouter.get('/files/read', (req, res) => {
   const filePath = req.query.path as string;
   if (!filePath) {
     return res.status(400).json({ error: 'Missing path query parameter' });
+  }
+  if (isSensitiveEnvPath(filePath)) {
+    return res.status(403).json({ error: 'Access denied: .env files cannot be read via file API' });
   }
 
   try {
@@ -170,7 +291,7 @@ apiRouter.post('/files/create', (req, res) => {
   }
 });
 
-apiRouter.post('/files/rename', (req, res) => {
+apiRouter.post('/files/rename', async (req, res) => {
   const { oldPath, newPath } = req.body;
   if (!oldPath || !newPath) {
     return res.status(400).json({ error: 'Missing oldPath or newPath' });
@@ -178,7 +299,11 @@ apiRouter.post('/files/rename', (req, res) => {
 
   try {
     renameItem(oldPath, newPath);
-    res.json({ success: true });
+    let manifestUpdated = false;
+    if (findManifestEntryByPath(oldPath)) {
+      manifestUpdated = await updateManifestFilepath(oldPath, newPath);
+    }
+    res.json({ success: true, manifestUpdated });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -191,31 +316,135 @@ apiRouter.post('/files/delete', (req, res) => {
   }
 
   try {
+    const manifestEntry = findManifestEntryByPath(targetPath);
     deleteItem(targetPath);
-    res.json({ success: true });
+    res.json({
+      success: true,
+      manifestAffected: Boolean(manifestEntry),
+      manifestEntryId: manifestEntry?.id
+    });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
 
-apiRouter.post('/files/upload', upload.single('file'), (req, res) => {
+apiRouter.post('/files/upload', upload.single('file'), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'No file uploaded' });
   }
-  res.json({ success: true, filename: req.file.originalname });
+  try {
+    applyTargetOwnership(req.file.path);
+    const relPath = path.relative(path.resolve(WORKSPACE_DIR), path.resolve(req.file.path)).replace(/\\/g, '/');
+    const description = typeof req.body?.description === 'string' ? req.body.description : '';
+
+    let manifestEntry = null;
+    if (relPath.startsWith('data/raw/')) {
+      manifestEntry = await registerDataFile({
+        filepath: relPath,
+        description: description || `Uploaded dataset (${req.file.filename})`,
+        acquisition: {
+          method: 'upload'
+        }
+      });
+    }
+
+    res.json({
+      success: true,
+      filename: req.file.filename,
+      filepath: relPath,
+      manifestEntry
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Stream raw local files (images, assets) for inline WYSIWYG editor
 apiRouter.use('/files/raw', (req, res) => {
   try {
-    const rawPath = req.path.replace(/^\//, '');
-    const fullPath = resolveSafePath(rawPath);
+    let decoded = req.path.replace(/^\//, '');
+    try {
+      decoded = decodeURIComponent(decoded);
+    } catch {
+      return res.status(400).send('Malformed file path');
+    }
+    if (isSensitiveEnvPath(decoded)) {
+      return res.status(403).send('Access denied: .env files cannot be read via file API');
+    }
+    const fullPath = resolveSafePath(decoded);
     if (!fs.existsSync(fullPath)) {
       return res.status(404).send('File not found');
+    }
+    const st = fs.statSync(fullPath);
+    if (!st.isFile()) {
+      return res.status(400).send('Path is not a file');
     }
     res.sendFile(fullPath);
   } catch (err: any) {
     res.status(400).send(err.message);
+  }
+});
+
+// Data Provenance Manifest endpoints (Feature 6)
+apiRouter.get('/data/manifest', (_req, res) => {
+  try {
+    res.json(getManifestSummary());
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+apiRouter.post('/data/manifest/register', async (req, res) => {
+  try {
+    const { filepath, description, acquisition, id, excludeFromGit, excludeFromPublication } = req.body || {};
+    if (!filepath || typeof filepath !== 'string') {
+      return res.status(400).json({ error: 'filepath is required' });
+    }
+    const entry = await registerDataFile({
+      filepath,
+      description,
+      acquisition,
+      id,
+      excludeFromGit,
+      excludeFromPublication
+    });
+    res.json({ success: true, entry });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+apiRouter.post('/data/manifest/verify', async (_req, res) => {
+  try {
+    const report = await verifyManifest();
+    res.json(report);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+apiRouter.post('/data/manifest/untrack-git', async (req, res) => {
+  try {
+    const { filepath } = req.body || {};
+    if (!filepath || typeof filepath !== 'string') {
+      return res.status(400).json({ error: 'filepath is required' });
+    }
+    const result = await untrackRawFromGit(filepath);
+    res.json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+apiRouter.delete('/data/manifest/:id', async (req, res) => {
+  try {
+    const removed = await removeManifestEntry(req.params.id);
+    if (!removed) {
+      return res.status(404).json({ error: 'Manifest entry not found' });
+    }
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -276,16 +505,88 @@ apiRouter.get('/agent/config', (_req, res) => {
   });
 });
 
-apiRouter.post('/agent/save-config', (req, res) => {
-  const { geminiApiKey, openaiApiKey, anthropicApiKey } = req.body;
-  
+apiRouter.get('/agent/instructions', (_req, res) => {
+  try {
+    res.json({
+      rootFile: getProjectRootFile(),
+      userInstructions: readUserInstructions()
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+apiRouter.post('/agent/instructions', (req, res) => {
+  try {
+    const { userInstructions } = req.body || {};
+    if (typeof userInstructions !== 'string') {
+      return res.status(400).json({ error: 'userInstructions must be a string' });
+    }
+    writeUserInstructions(userInstructions);
+    try {
+      const sysPromptPath = path.join(WORKSPACE_DIR, '.bionic', 'SYSTEM_PROMPT.md');
+      if (fs.existsSync(sysPromptPath)) {
+        refreshManagedSystemPrompt();
+      }
+    } catch {}
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Subagent inspection & control endpoints (Feature 3)
+apiRouter.get('/agent/subagents', async (req, res) => {
+  try {
+    const sessionId = typeof req.query.sessionId === 'string' ? req.query.sessionId : undefined;
+    const data = await opencodeServer.listRemoteSubagents(sessionId);
+    res.json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+apiRouter.get('/agent/subagents/:childSessionId', async (req, res) => {
+  try {
+    const details = await opencodeServer.getChildSessionDetails(req.params.childSessionId);
+    res.json(details);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+apiRouter.post('/agent/subagents/:jobId/cancel', async (req, res) => {
+  try {
+    const cancelled = await opencodeServer.cancelSubagentJob(req.params.jobId);
+    res.json({ success: cancelled });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+apiRouter.post('/agent/save-config', async (req, res) => {
+  const sanitizeKey = (v: unknown): string | undefined => {
+    if (typeof v !== 'string') return undefined;
+    const cleaned = v.replace(/[\r\n\0]/g, '').trim();
+    return cleaned || undefined;
+  };
+
+  const geminiApiKey = sanitizeKey(req.body?.geminiApiKey);
+  const openaiApiKey = sanitizeKey(req.body?.openaiApiKey);
+  const anthropicApiKey = sanitizeKey(req.body?.anthropicApiKey);
+
   updateConfigKeys({
     geminiApiKey,
     openaiApiKey,
     anthropicApiKey
   });
 
-  // Write/append to .env so server restarts retain the keys
+  // Sync updated keys into running OpenCode V2 server via Credential API
+  opencodeServer
+    .syncProviderCredentials({ geminiApiKey, openaiApiKey, anthropicApiKey })
+    .catch(() => {});
+
+  // Write/append to .env so server restarts retain the keys (0600 permissions)
   try {
     let envPath = process.env.ENV_FILE || path.join(PACKAGE_ROOT, '.env');
     try {
@@ -294,29 +595,26 @@ apiRouter.post('/agent/save-config', (req, res) => {
       envPath = path.join(WORKSPACE_DIR, '.env');
     }
     let envContent = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf-8') : '';
-    
-    if (geminiApiKey) {
-      if (/^GEMINI_API_KEY=.*/m.test(envContent)) {
-        envContent = envContent.replace(/^GEMINI_API_KEY=.*/m, `GEMINI_API_KEY=${geminiApiKey}`);
+
+    const upsertEnv = (keyName: string, val?: string) => {
+      if (!val) return;
+      const re = new RegExp(`^${keyName}=.*`, 'm');
+      if (re.test(envContent)) {
+        envContent = envContent.replace(re, () => `${keyName}=${val}`);
       } else {
-        envContent += `\nGEMINI_API_KEY=${geminiApiKey}`;
+        envContent += `\n${keyName}=${val}`;
       }
-    }
-    if (openaiApiKey) {
-      if (/^OPENAI_API_KEY=.*/m.test(envContent)) {
-        envContent = envContent.replace(/^OPENAI_API_KEY=.*/m, `OPENAI_API_KEY=${openaiApiKey}`);
-      } else {
-        envContent += `\nOPENAI_API_KEY=${openaiApiKey}`;
-      }
-    }
-    if (anthropicApiKey) {
-      if (/^ANTHROPIC_API_KEY=.*/m.test(envContent)) {
-        envContent = envContent.replace(/^ANTHROPIC_API_KEY=.*/m, `ANTHROPIC_API_KEY=${anthropicApiKey}`);
-      } else {
-        envContent += `\nANTHROPIC_API_KEY=${anthropicApiKey}`;
-      }
-    }
-    fs.writeFileSync(envPath, envContent.trim() + '\n', 'utf-8');
+    };
+
+    upsertEnv('GEMINI_API_KEY', geminiApiKey);
+    upsertEnv('OPENAI_API_KEY', openaiApiKey);
+    upsertEnv('ANTHROPIC_API_KEY', anthropicApiKey);
+
+    fs.writeFileSync(envPath, envContent.trim() + '\n', { encoding: 'utf-8', mode: 0o600 });
+    try {
+      fs.chmodSync(envPath, 0o600);
+    } catch {}
+    applyTargetOwnership(envPath);
   } catch (err) {
     console.warn('Could not write to .env:', err);
   }
@@ -334,6 +632,15 @@ apiRouter.get('/agent/sessions', (_req, res) => {
   try {
     const list = listSessions();
     res.json({ sessions: list });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+apiRouter.get('/agent/sessions/:id/sync', async (req, res) => {
+  try {
+    const synced = await opencodeServer.syncSession(req.params.id);
+    res.json(synced);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -378,7 +685,7 @@ apiRouter.post('/agent/cancel', (req, res) => {
   res.json({ success: true, killedCount: count });
 });
 
-// Agent chat with Server-Sent Events (SSE)
+// Agent chat with Server-Sent Events (SSE) — emits exactly ONE final event per turn
 apiRouter.post('/agent/chat', async (req, res) => {
   const { messages, config } = req.body;
   if (!messages || !Array.isArray(messages)) {
@@ -393,18 +700,22 @@ apiRouter.post('/agent/chat', async (req, res) => {
     }
   });
 
-  // Set up SSE headers
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
 
   const sendEvent = (event: StepEvent) => {
-    res.write(`data: ${JSON.stringify(event)}\n\n`);
+    if (!res.writableEnded) {
+      res.write(`data: ${JSON.stringify(event)}\n\n`);
+    }
   };
 
   try {
     const result = await runAgentConversation(messages, config || { provider: 'demo' }, (evt) => {
-      sendEvent(evt);
+      // Prevent duplicate final events if a runner emits one
+      if (evt.type !== 'final') {
+        sendEvent(evt);
+      }
     });
 
     sendEvent({
@@ -427,13 +738,6 @@ app.use('/api', apiRouter);
 if (BASE_URL) {
   app.use(`${BASE_URL}/api`, apiRouter);
 }
-
-// WebSocket management with heartbeat and socket reclamation
-interface ExtWebSocket extends WebSocket {
-  isAlive?: boolean;
-}
-
-const activeClients = new Set<ExtWebSocket>();
 
 // Heartbeat every 30s to terminate zombie / leaked sockets
 const heartbeatInterval = setInterval(() => {
@@ -499,7 +803,7 @@ wss.on('connection', (rawWs) => {
           terminalSession = null;
         }
       }
-    } catch (e) {
+    } catch {
       // ignore
     }
   });
@@ -513,25 +817,32 @@ wss.on('connection', (rawWs) => {
   });
 });
 
-// File watcher broadcast
+// File watcher broadcast + auto-sync DATA_MANIFEST.md only on external edits to data/manifest.json
+let isSyncingManifestFromWatch = false;
 initFileWatcher((event, relPath) => {
-  const payload = JSON.stringify({
+  if (
+    relPath === MANIFEST_REL_PATH &&
+    (event === 'add' || event === 'change') &&
+    !isSyncingManifestFromWatch &&
+    !wasManifestWrittenInternallyRecently()
+  ) {
+    isSyncingManifestFromWatch = true;
+    try {
+      syncManifestArtifacts(readManifest());
+    } catch {
+      // ignore invalid partial JSON
+    } finally {
+      setTimeout(() => {
+        isSyncingManifestFromWatch = false;
+      }, 400).unref();
+    }
+  }
+
+  broadcastWs({
     type: 'file_changed',
     event,
     path: relPath
   });
-
-  for (const client of activeClients) {
-    if (client.readyState === WebSocket.OPEN) {
-      try {
-        client.send(payload);
-      } catch {
-        activeClients.delete(client);
-      }
-    } else if (client.readyState === WebSocket.CLOSED || client.readyState === WebSocket.CLOSING) {
-      activeClients.delete(client);
-    }
-  }
 });
 
 // Serve frontend static build
@@ -554,10 +865,16 @@ if (fs.existsSync(clientDist)) {
       let html = fs.readFileSync(path.join(clientDist, 'index.html'), 'utf-8');
       const basePrefix = BASE_URL || '';
       const baseHref = BASE_URL ? `${BASE_URL}/` : '/';
-      const configScript = `<script>window.__BIONIC_CONFIG__ = ${JSON.stringify({
+      const rootFile = getProjectRootFile();
+      const safeJson = JSON.stringify({
         baseUrl: basePrefix,
-        baseSpec: BASE_SPEC
-      })};</script><base href="${baseHref}">`;
+        baseSpec: rootFile,
+        rootFile
+      })
+        .replace(/</g, '\\u003c')
+        .replace(/>/g, '\\u003e')
+        .replace(/&/g, '\\u0026');
+      const configScript = `<script>window.__BIONIC_CONFIG__ = ${safeJson};</script><base href="${baseHref}">`;
 
       if (html.includes('<head>')) {
         html = html.replace('<head>', `<head>\n  ${configScript}`);
@@ -573,7 +890,6 @@ if (fs.existsSync(clientDist)) {
 
   if (BASE_URL) {
     app.use((req, res, next) => {
-      // If requested exact slug without trailing slash (e.g. /ws-01 or /ws-01?query), redirect to /ws-01/
       const urlWithoutQuery = (req.originalUrl || req.url || '').split('?')[0];
       if (req.method === 'GET' && urlWithoutQuery === BASE_URL) {
         const query = (req.originalUrl || req.url || '').includes('?')
@@ -591,7 +907,6 @@ if (fs.existsSync(clientDist)) {
     if (p.startsWith('/api') || p.startsWith('/report')) return next();
     if (BASE_URL && (p.startsWith(`${BASE_URL}/api`) || p.startsWith(`${BASE_URL}/report`))) return next();
 
-    // Match root, slug root, or subpaths
     if (p === '/' || !BASE_URL || p === `${BASE_URL}/` || p.startsWith(`${BASE_URL}/`)) {
       return sendIndexHtml(req, res);
     }
@@ -617,7 +932,6 @@ server.on('error', (err: any) => {
     console.error(`\n⚠️ Sockets / File descriptor limit encountered: ${err.message || err.code}`);
     console.error('💡 Reclaiming idle sockets and purging disconnected clients...\n');
 
-    // Purge non-open or unresponsive WebSocket clients
     for (const client of activeClients) {
       if (client.readyState !== WebSocket.OPEN) {
         activeClients.delete(client);
@@ -627,7 +941,6 @@ server.on('error', (err: any) => {
       }
     }
 
-    // Clean up idle HTTP sockets
     for (const socket of activeSockets) {
       try {
         socket.destroy();
@@ -642,13 +955,24 @@ server.on('error', (err: any) => {
 server.listen(PORT, HOST, () => {
   const displayHost = HOST === '0.0.0.0' ? 'localhost' : HOST;
   const baseDisplay = BASE_URL ? `${BASE_URL}/` : '';
+  const rootFile = getProjectRootFile();
   console.log(`\n======================================================`);
   console.log(`🔬 Bionic Editor running at http://${displayHost}:${PORT}/${baseDisplay}`);
   console.log(`📁 Workspace: ${WORKSPACE_DIR}`);
-  console.log(`📄 Base Spec: ${BASE_SPEC}`);
+  console.log(`📄 Project Root Plan: ${rootFile}`);
   if (BASE_URL) {
     console.log(`🔗 Base URL Slug: ${BASE_URL}`);
   }
   console.log(`📊 Web Report: http://${displayHost}:${PORT}/${BASE_URL ? BASE_URL.slice(1) + '/' : ''}report/`);
   console.log(`======================================================\n`);
 });
+
+const shutdownGracefully = () => {
+  opencodeServer.stop();
+  closeFileWatcher();
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(0), 2000).unref();
+};
+
+process.on('SIGINT', shutdownGracefully);
+process.on('SIGTERM', shutdownGracefully);

@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { spawn } from 'child_process';
-import { WORKSPACE_DIR, getTargetSpawnOptions } from '../config.js';
+import { WORKSPACE_DIR, PORT, BASE_URL, getTargetSpawnOptions } from '../config.js';
 import { resolveSafePath } from './workspace.js';
 
 export interface VenvStatus {
@@ -9,6 +9,10 @@ export interface VenvStatus {
   pythonPath: string;
   hasRequirements: boolean;
   installedPackages?: string[];
+}
+
+function getBionicApiUrl(): string {
+  return `http://127.0.0.1:${PORT}${BASE_URL}/api`;
 }
 
 export function getVenvPythonPath(): string {
@@ -146,7 +150,8 @@ export function runPythonScript(
 
     const spawnOpts = getTargetSpawnOptions({
       PATH: `${path.join(WORKSPACE_DIR, '.venv', 'bin')}:${process.env.PATH}`,
-      PYTHONUNBUFFERED: '1'
+      PYTHONUNBUFFERED: '1',
+      BIONIC_API_URL: getBionicApiUrl()
     });
 
     const proc = spawn(pythonPath, [fullScriptPath, ...args], {
@@ -200,7 +205,8 @@ export function runBashCommand(
 ): Promise<{ success: boolean; code: number; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     const spawnOpts = getTargetSpawnOptions({
-      PATH: `${path.join(WORKSPACE_DIR, '.venv', 'bin')}:${process.env.PATH}`
+      PATH: `${path.join(WORKSPACE_DIR, '.venv', 'bin')}:${process.env.PATH}`,
+      BIONIC_API_URL: getBionicApiUrl()
     });
 
     const proc = spawn('/bin/bash', ['-c', cmd], {

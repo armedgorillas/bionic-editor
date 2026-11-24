@@ -6,19 +6,44 @@ export type FileChangeCallback = (event: 'add' | 'change' | 'unlink' | 'addDir' 
 
 let watcher: any = null;
 
+const IGNORED_SEGMENTS = new Set([
+  '.venv',
+  '.git',
+  'node_modules',
+  '__pycache__',
+  '.pytest_cache',
+  '.mypy_cache',
+  '.ruff_cache',
+  '.tox'
+]);
+
+/**
+ * Chokidar v5 removed glob support in `ignored`; use a fast path predicate instead.
+ */
+export function shouldIgnoreWatchedPath(filePath: string): boolean {
+  const rel = path.relative(WORKSPACE_DIR, filePath).replace(/\\/g, '/');
+  if (!rel || rel === '.') return false;
+
+  const segments = rel.split('/');
+  for (const seg of segments) {
+    if (IGNORED_SEGMENTS.has(seg)) return true;
+  }
+
+  // Ignore internal chat session logs and atomic temp files
+  if (rel === '.bionic/sessions' || rel.startsWith('.bionic/sessions/')) return true;
+  if (rel === '.bionic/opencode-sessions.json') return true;
+  if (/\.tmp\.\d+\./.test(path.basename(rel))) return true;
+
+  return false;
+}
+
 export function initFileWatcher(onFileChange: FileChangeCallback): void {
   if (watcher) {
     watcher.close();
   }
 
   watcher = chokidar.watch(WORKSPACE_DIR, {
-    ignored: [
-      /(^|[\/\\])\../, // dotfiles/dotfolders
-      '**/.venv/**',
-      '**/node_modules/**',
-      '**/__pycache__/**',
-      '**/.git/**'
-    ],
+    ignored: shouldIgnoreWatchedPath,
     persistent: true,
     ignoreInitial: true,
     awaitWriteFinish: {
@@ -28,7 +53,8 @@ export function initFileWatcher(onFileChange: FileChangeCallback): void {
   });
 
   const handle = (type: 'add' | 'change' | 'unlink' | 'addDir' | 'unlinkDir') => (filePath: string) => {
-    const rel = path.relative(WORKSPACE_DIR, filePath);
+    const rel = path.relative(WORKSPACE_DIR, filePath).replace(/\\/g, '/');
+    if (shouldIgnoreWatchedPath(filePath)) return;
     onFileChange(type, rel);
   };
 

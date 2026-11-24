@@ -1,19 +1,49 @@
-import type { FileItem, WorkspaceInfo, VenvStatus } from '../types';
+import type {
+  FileItem,
+  WorkspaceInfo,
+  VenvStatus,
+  WorkspaceConfigResponse,
+  DataManifestSummary,
+  DataAcquisitionInfo,
+  SubagentJobView
+} from '../types';
 
-export function getBionicConfig(): { baseUrl: string; baseSpec: string } {
+export function getBionicConfig(): { baseUrl: string; baseSpec: string; rootFile?: string } {
   if (typeof window !== 'undefined' && (window as any).__BIONIC_CONFIG__) {
     return (window as any).__BIONIC_CONFIG__;
   }
-  return { baseUrl: '', baseSpec: 'SPEC.md' };
+  return { baseUrl: '', baseSpec: 'SPEC.md', rootFile: 'SPEC.md' };
 }
 
 export const BASE_URL = getBionicConfig().baseUrl;
-export const BASE_SPEC = getBionicConfig().baseSpec;
+export const BASE_SPEC = getBionicConfig().rootFile || getBionicConfig().baseSpec;
 export const API_BASE = `${BASE_URL}/api`;
 
 export async function fetchWorkspaceInfo(): Promise<WorkspaceInfo> {
   const res = await fetch(`${API_BASE}/workspace/info`);
   if (!res.ok) throw new Error('Failed to fetch workspace info');
+  return res.json();
+}
+
+export async function fetchWorkspaceConfig(): Promise<WorkspaceConfigResponse> {
+  const res = await fetch(`${API_BASE}/workspace/config`);
+  if (!res.ok) throw new Error('Failed to fetch workspace config');
+  return res.json();
+}
+
+export async function updateWorkspaceConfig(payload: {
+  rootFile: string;
+  createIfMissing?: boolean;
+}): Promise<WorkspaceConfigResponse> {
+  const res = await fetch(`${API_BASE}/workspace/config`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to update workspace config');
+  }
   return res.json();
 }
 
@@ -23,8 +53,9 @@ export async function initWorkspaceTemplate(): Promise<{ success: boolean; messa
   return res.json();
 }
 
-export async function fetchFileTree(): Promise<FileItem[]> {
-  const res = await fetch(`${API_BASE}/files/tree`);
+export async function fetchFileTree(includeDotItems = true): Promise<FileItem[]> {
+  const query = includeDotItems ? '?includeDotItems=true' : '';
+  const res = await fetch(`${API_BASE}/files/tree${query}`);
   if (!res.ok) throw new Error('Failed to fetch file tree');
   const data = await res.json();
   return data.tree;
@@ -54,35 +85,97 @@ export async function createItem(path: string, isDirectory: boolean): Promise<vo
   if (!res.ok) throw new Error(`Failed to create item: ${path}`);
 }
 
-export async function renameItem(oldPath: string, newPath: string): Promise<void> {
+export async function renameItem(oldPath: string, newPath: string): Promise<{ success: boolean; manifestUpdated?: boolean }> {
   const res = await fetch(`${API_BASE}/files/rename`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ oldPath, newPath })
   });
   if (!res.ok) throw new Error(`Failed to rename ${oldPath}`);
+  return res.json();
 }
 
-export async function deleteItem(path: string): Promise<void> {
+export async function deleteItem(path: string): Promise<{ success: boolean; manifestAffected?: boolean }> {
   const res = await fetch(`${API_BASE}/files/delete`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ path })
   });
   if (!res.ok) throw new Error(`Failed to delete ${path}`);
+  return res.json();
 }
 
-export async function uploadFile(file: File, targetDir: string = ''): Promise<void> {
+export async function uploadFile(file: File, targetDir: string = '', description?: string): Promise<any> {
   const formData = new FormData();
   formData.append('file', file);
-  const url = targetDir 
-    ? `${API_BASE}/files/upload?dir=${encodeURIComponent(targetDir)}` 
+  if (description) {
+    formData.append('description', description);
+  }
+  const url = targetDir
+    ? `${API_BASE}/files/upload?dir=${encodeURIComponent(targetDir)}`
     : `${API_BASE}/files/upload`;
   const res = await fetch(url, {
     method: 'POST',
     body: formData
   });
   if (!res.ok) throw new Error('File upload failed');
+  return res.json();
+}
+
+// Data Provenance Manifest API
+export async function fetchDataManifest(): Promise<DataManifestSummary> {
+  const res = await fetch(`${API_BASE}/data/manifest`);
+  if (!res.ok) throw new Error('Failed to load data provenance manifest');
+  return res.json();
+}
+
+export async function registerDataManifestFile(payload: {
+  filepath: string;
+  description?: string;
+  acquisition?: Partial<DataAcquisitionInfo>;
+  id?: string;
+}): Promise<{ success: boolean; entry: any }> {
+  const res = await fetch(`${API_BASE}/data/manifest/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to register dataset');
+  }
+  return res.json();
+}
+
+export async function verifyDataManifest(): Promise<DataManifestSummary> {
+  const res = await fetch(`${API_BASE}/data/manifest/verify`, { method: 'POST' });
+  if (!res.ok) throw new Error('Failed to verify data manifest');
+  return res.json();
+}
+
+export async function untrackRawFromGit(filepath: string): Promise<{
+  success: boolean;
+  filepath: string;
+  inGitHistory: boolean;
+  warning?: string;
+}> {
+  const res = await fetch(`${API_BASE}/data/manifest/untrack-git`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ filepath })
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to untrack file from Git');
+  }
+  return res.json();
+}
+
+export async function deleteDataManifestEntry(id: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/data/manifest/${encodeURIComponent(id)}`, {
+    method: 'DELETE'
+  });
+  if (!res.ok) throw new Error('Failed to remove manifest entry');
 }
 
 export async function fetchVenvStatus(): Promise<VenvStatus> {
@@ -110,23 +203,72 @@ export async function runPython(scriptPath: string, args: string[] = []): Promis
   return res.json();
 }
 
-export async function fetchAgentConfig(): Promise<{ 
+export async function fetchAgentConfig(): Promise<{
   hasGeminiKey: boolean;
   hasOpenaiKey: boolean;
   hasAnthropicKey: boolean;
-  availableProviders: any[]; 
-  defaultProvider: string 
+  isOpenCodeInstalled: boolean;
+  harness: 'opencode' | 'built-in';
+  availableProviders: any[];
+  defaultProvider: string;
 }> {
   const res = await fetch(`${API_BASE}/agent/config`);
   return res.json();
 }
 
-export async function saveAgentConfig(config: any): Promise<{ success: boolean; hasGeminiKey: boolean }> {
+export async function saveAgentConfig(config: any): Promise<{
+  success: boolean;
+  hasGeminiKey: boolean;
+  hasOpenaiKey: boolean;
+  hasAnthropicKey: boolean;
+}> {
   const res = await fetch(`${API_BASE}/agent/save-config`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(config)
   });
+  return res.json();
+}
+
+export async function fetchAgentInstructions(): Promise<{ rootFile: string; userInstructions: string }> {
+  const res = await fetch(`${API_BASE}/agent/instructions`);
+  if (!res.ok) throw new Error('Failed to fetch agent instructions');
+  return res.json();
+}
+
+export async function saveAgentInstructions(userInstructions: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/agent/instructions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ userInstructions })
+  });
+  if (!res.ok) throw new Error('Failed to save agent instructions');
+}
+
+export async function fetchSubagents(sessionId?: string): Promise<{
+  jobs: SubagentJobView[];
+  availableAgents: Array<{ id: string; description?: string; mode?: string }>;
+}> {
+  const query = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : '';
+  const res = await fetch(`${API_BASE}/agent/subagents${query}`);
+  if (!res.ok) throw new Error('Failed to fetch subagents');
+  return res.json();
+}
+
+export async function fetchSubagentDetails(childSessionId: string): Promise<{
+  childSessionId: string;
+  messages: Array<{ role: string; text: string; tools: Array<{ title: string; status: string; output?: string }> }>;
+}> {
+  const res = await fetch(`${API_BASE}/agent/subagents/${encodeURIComponent(childSessionId)}`);
+  if (!res.ok) throw new Error('Failed to load subagent details');
+  return res.json();
+}
+
+export async function cancelSubagentJob(jobId: string): Promise<{ success: boolean }> {
+  const res = await fetch(`${API_BASE}/agent/subagents/${encodeURIComponent(jobId)}/cancel`, {
+    method: 'POST'
+  });
+  if (!res.ok) throw new Error('Failed to cancel subagent');
   return res.json();
 }
 
@@ -140,6 +282,12 @@ export async function fetchChatSessions(): Promise<any[]> {
 export async function fetchChatSession(id: string): Promise<any> {
   const res = await fetch(`${API_BASE}/agent/sessions/${encodeURIComponent(id)}`);
   if (!res.ok) throw new Error(`Failed to load chat session ${id}`);
+  return res.json();
+}
+
+export async function syncChatSession(id: string): Promise<{ session: any | null; subagents: SubagentJobView[] }> {
+  const res = await fetch(`${API_BASE}/agent/sessions/${encodeURIComponent(id)}/sync`);
+  if (!res.ok) throw new Error(`Failed to sync chat session ${id}`);
   return res.json();
 }
 
@@ -205,7 +353,7 @@ export async function streamAgentChat(
         try {
           const eventData = JSON.parse(jsonStr);
           onEvent(eventData);
-        } catch (e) {
+        } catch {
           // ignore parse error
         }
       }

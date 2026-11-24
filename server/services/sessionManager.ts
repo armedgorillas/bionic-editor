@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { WORKSPACE_DIR } from '../config.js';
+import { ensureDirWithOwnership, atomicWriteFileSync } from './fsSafe.js';
 
 export interface ChatSession {
   id: string;
@@ -22,9 +23,7 @@ export interface ChatSessionSummary {
 
 function getSessionsDir(): string {
   const dir = path.join(WORKSPACE_DIR, '.bionic', 'sessions');
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
+  ensureDirWithOwnership(dir);
   return dir;
 }
 
@@ -84,7 +83,7 @@ export function saveSession(session: ChatSession): ChatSession {
     updatedAt: Date.now()
   };
 
-  fs.writeFileSync(fullPath, JSON.stringify(updated, null, 2), 'utf-8');
+  atomicWriteFileSync(fullPath, JSON.stringify(updated, null, 2));
   return updated;
 }
 

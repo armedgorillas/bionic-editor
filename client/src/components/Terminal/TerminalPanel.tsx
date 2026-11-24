@@ -3,10 +3,16 @@ import { Terminal as TerminalIcon, Play, Trash2, X } from 'lucide-react';
 import { getBionicConfig } from '../../services/api';
 
 interface TerminalPanelProps {
+  projectRootFile?: string;
+  height?: number;
   onClose?: () => void;
 }
 
-export const TerminalPanel: React.FC<TerminalPanelProps> = ({ onClose }) => {
+export const TerminalPanel: React.FC<TerminalPanelProps> = ({
+  projectRootFile,
+  height = 256,
+  onClose
+}) => {
   const [output, setOutput] = useState<string[]>([
     '🔬 Bionic Editor Virtual Environment Shell',
     'Working directory: workspace/',
@@ -31,7 +37,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ onClose }) => {
       try {
         const msg = JSON.parse(event.data);
         if (msg.type === 'terminal_output') {
-          setOutput(prev => [...prev, msg.data]);
+          setOutput((prev) => [...prev, msg.data]);
         }
       } catch {
         // ignore
@@ -68,10 +74,12 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ onClose }) => {
 
   const sendCommand = (cmd: string) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
-    wsRef.current.send(JSON.stringify({
-      type: 'terminal_input',
-      data: `${cmd}\n`
-    }));
+    wsRef.current.send(
+      JSON.stringify({
+        type: 'terminal_input',
+        data: `${cmd}\n`
+      })
+    );
   };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -85,17 +93,20 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ onClose }) => {
     setOutput(['Terminal cleared. Ready.\n']);
   };
 
-  const baseSpec = getBionicConfig().baseSpec || 'SPEC.md';
+  const rootDoc = projectRootFile || getBionicConfig().baseSpec || 'SPEC.md';
 
   const quickActions = [
-    { label: 'Run analyze.py', cmd: 'python src/analyze.py' },
+    { label: 'List code/', cmd: 'ls -la code/' },
     { label: 'Check pip packages', cmd: 'pip list' },
     { label: 'List raw datasets', cmd: 'ls -l data/raw/' },
-    { label: `View ${baseSpec}`, cmd: `head -n 20 ${baseSpec}` }
+    { label: `View ${rootDoc}`, cmd: `head -n 20 "${rootDoc}"` }
   ];
 
   return (
-    <div className="flex flex-col h-64 bg-[#181818] border-t border-[#333333] text-gray-200 select-none">
+    <div
+      style={{ height: `${height}px` }}
+      className="flex flex-col flex-shrink-0 bg-[#181818] border-t border-[#333333] text-gray-200 select-none"
+    >
       {/* Terminal Header */}
       <div className="flex items-center justify-between px-3 py-1.5 bg-[#222222] border-b border-[#333333] text-xs">
         <div className="flex items-center space-x-2">
