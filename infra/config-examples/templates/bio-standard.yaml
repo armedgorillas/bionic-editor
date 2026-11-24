@@ -1,0 +1,30 @@
+apiVersion: bionic.io/v1
+kind: ComputeTemplate
+metadata:
+  slug: bio-standard
+  displayName: "Standard Bioinformatics Workstation"
+  description: "4 vCPU, 16 GB RAM, Python 3.12 + uv + gcsfuse + OpenCode V2"
+  allowedGroups:
+    - researchers
+    - admins
+compute:
+  provider: gcp
+  image: "projects/my-gcp-project-id/global/images/family/bionic-bio-standard"
+  machineType: "e2-standard-4"
+  zone: "us-central1-a"
+  bootDiskGb: 30
+  workspaceDiskGb: 100
+  workspaceDiskType: "pd-balanced"
+  suspendSupported: true
+  idleTimeoutDefaultMinutes: 20
+  idleTimeoutMaxMinutes: 180
+iam:
+  serviceAccountEmail: "bionic-tmpl-bio-standard@my-gcp-project-id.iam.gserviceaccount.com"
+  allowUserMetadataAdc: false
+secrets: []
+workspaceInitHook:
+  enabled: true
+  script: |
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "Initialized bio-standard workspace"

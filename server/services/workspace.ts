@@ -15,6 +15,7 @@ import {
   writeManifestSync,
   MANIFEST_REL_PATH
 } from './dataManifest.js';
+import { scaffoldPortableProjectScripts } from './portableScripts.js';
 
 export { isPathSafe, resolveSafePath, applyTargetOwnership, ensureDirWithOwnership, atomicWriteFileSync };
 
@@ -230,6 +231,9 @@ scipy>=1.10.0
   if (!fs.existsSync(manifestPath)) {
     writeManifestSync(createEmptyManifest());
   }
+
+  // Scaffold portable, zero-lock-in bash workflow scripts (scripts/*.sh + bionic.yaml)
+  scaffoldPortableProjectScripts(WORKSPACE_DIR);
 }
 
 export function getFileTree(

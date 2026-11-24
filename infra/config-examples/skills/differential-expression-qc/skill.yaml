@@ -1,0 +1,18 @@
+apiVersion: bionic.io/v1
+kind: SkillConfig
+metadata:
+  slug: differential-expression-qc
+  displayName: "RNA-seq Differential Expression QC"
+  description: "Standard quality control checklist for bulk RNA-seq DEG tables and volcano plots"
+  allowedGroups:
+    - researchers
+    - admins
+  enabled: true
+spec:
+  entryFile: "SKILL.md"
+  files:
+    SKILL.md: |
+      # RNA-seq Differential Expression QC
+      1. Verify library size normalization and sample-level PCA separation.
+      2. Report Benjamini-Hochberg adjusted p-values (padj) alongside raw p-values.
+      3. Record numerical verification assertions in `tests/scientific/test_deg_panel.py`.

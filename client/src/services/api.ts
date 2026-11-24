@@ -8,11 +8,36 @@ import type {
   SubagentJobView
 } from '../types';
 
-export function getBionicConfig(): { baseUrl: string; baseSpec: string; rootFile?: string } {
+export interface BionicRuntimeConfig {
+  baseUrl: string;
+  baseSpec: string;
+  rootFile?: string;
+  hubMode?: boolean;
+  sandboxMode?: boolean;
+  hubUrl?: string;
+  projectId?: string;
+  reportsOrigin?: string;
+}
+
+export function getBionicConfig(): BionicRuntimeConfig {
   if (typeof window !== 'undefined' && (window as any).__BIONIC_CONFIG__) {
     return (window as any).__BIONIC_CONFIG__;
   }
   return { baseUrl: '', baseSpec: 'SPEC.md', rootFile: 'SPEC.md' };
+}
+
+export async function publishProjectReport(payload: {
+  visibility: 'private' | 'org' | 'public';
+  title: string;
+  summary?: string;
+  dryRun?: boolean;
+}): Promise<{ success: boolean; stdout?: string; stderr?: string; error?: string }> {
+  const res = await fetch(`${API_BASE}/hub/publish`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  return res.json();
 }
 
 export const BASE_URL = getBionicConfig().baseUrl;

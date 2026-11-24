@@ -1,0 +1,11 @@
+schemaVersion: 1
+name: "demo-rnaseq-kidney-cohort"
+description: "Self-contained reproducible RNA-seq differential expression showcase module"
+environment:
+  pythonLockfile: "requirements.txt"
+entrypoint:
+  argv: ["bash", "scripts/run.sh"]
+  workdir: "."
+outputs:
+  reportDir: "web-report"
+  testResultsGlob: "tests/scientific/*_results.json"

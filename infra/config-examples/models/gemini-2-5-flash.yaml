@@ -1,0 +1,26 @@
+apiVersion: bionic.io/v1
+kind: ModelConfig
+metadata:
+  slug: gemini-2-5-flash
+  displayName: "Gemini 2.5 Flash"
+  description: "Fast low-cost scientific analysis model"
+  allowedGroups:
+    - researchers
+    - admins
+  enabled: true
+spec:
+  provider: gemini
+  protocol: google
+  modelId: "gemini-2.5-flash"
+  auth:
+    type: secret_ref
+    apiKeySecretRef: "gcp-sm://projects/my-gcp-project-id/secrets/bionic-gemini-api-key/versions/latest"
+  limits:
+    maxContextTokens: 1000000
+    maxOutputTokens: 8192
+    dailyBudgetUsdPerUser: 15
+    dailyBudgetUsdPerProject: 60
+  pricing:
+    inputPerMillionUsd: 0.15
+    outputPerMillionUsd: 0.60
+    cachedInputPerMillionUsd: 0.0375

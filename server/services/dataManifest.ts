@@ -35,6 +35,17 @@ export interface DataAcquisitionInfo {
   sourceUrl?: string;
 }
 
+export interface DataStorageMetadata {
+  provider: 'gcs' | 's3' | 'local';
+  dataObjectId?: string;
+  uri: string;
+  generation?: string;
+  crc32c?: string;
+  syncStatus: 'synced' | 'pending' | 'remote_only';
+  syncedAt?: string;
+  readOnly?: boolean;
+}
+
 export interface DataManifestEntry {
   id: string;
   filepath: string;
@@ -46,16 +57,17 @@ export interface DataManifestEntry {
   description: string;
   excludeFromGit: boolean;
   excludeFromPublication: boolean;
+  storage?: DataStorageMetadata;
 }
 
 export interface DataManifestDocument {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   updatedAt: string;
   entries: DataManifestEntry[];
 }
 
-export type PassiveEntryStatus = 'present' | 'size_changed' | 'missing';
-export type VerifiedEntryStatus = 'verified' | 'modified' | 'missing';
+export type PassiveEntryStatus = 'present' | 'remote_only' | 'size_changed' | 'missing';
+export type VerifiedEntryStatus = 'verified' | 'remote_only' | 'modified' | 'missing';
 
 export interface EntrySummary extends DataManifestEntry {
   status: PassiveEntryStatus | VerifiedEntryStatus;
@@ -199,7 +211,7 @@ export function readManifest(): DataManifestDocument {
     const parsed = JSON.parse(raw);
     if (parsed && Array.isArray(parsed.entries)) {
       return {
-        schemaVersion: 1,
+        schemaVersion: parsed.schemaVersion === 2 || parsed.entries.some((e: any) => Boolean(e?.storage)) ? 2 : 1,
         updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : new Date().toISOString(),
         entries: parsed.entries
       };
@@ -226,8 +238,9 @@ export function syncManifestArtifacts(manifest: DataManifestDocument): void {
 }
 
 export function writeManifestSync(manifest: DataManifestDocument): DataManifestDocument {
+  const hasStorage = manifest.entries.some((e) => Boolean(e.storage));
   const updated: DataManifestDocument = {
-    schemaVersion: 1,
+    schemaVersion: manifest.schemaVersion === 2 || hasStorage ? 2 : 1,
     updatedAt: new Date().toISOString(),
     entries: manifest.entries
   };
@@ -330,6 +343,19 @@ export function scanUntrackedRawFiles(manifest?: DataManifestDocument): Array<{ 
   return allRaw.filter((f) => !tracked.has(f.filepath));
 }
 
+const SHARED_DATA_PREFIX = '/mnt/shared-data/';
+
+function isSharedDataPath(fp: string): boolean {
+  return fp.startsWith(SHARED_DATA_PREFIX) && !fp.includes('..');
+}
+
+function resolveEntryPath(fp: string): string {
+  if (isSharedDataPath(fp)) {
+    return path.resolve(fp);
+  }
+  return resolveSafePath(fp);
+}
+
 /**
  * Fast passive status check using lstatSync only (never hashes multi-GB files).
  */
@@ -337,8 +363,11 @@ export function getManifestSummary(): ManifestSummaryResponse {
   const manifest = readManifest();
   const entries: EntrySummary[] = manifest.entries.map((entry) => {
     try {
-      const fullPath = resolveSafePath(entry.filepath);
+      const fullPath = resolveEntryPath(entry.filepath);
       if (!fs.existsSync(fullPath)) {
+        if (entry.storage?.syncStatus === 'remote_only' && entry.storage.uri) {
+          return { ...entry, status: 'remote_only' as const };
+        }
         return { ...entry, status: 'missing' as const };
       }
       const st = fs.lstatSync(fullPath);
@@ -350,6 +379,9 @@ export function getManifestSummary(): ManifestSummaryResponse {
       }
       return { ...entry, status: 'present' as const, diskSizeBytes: st.size };
     } catch {
+      if (entry.storage?.syncStatus === 'remote_only' && entry.storage.uri) {
+        return { ...entry, status: 'remote_only' as const };
+      }
       return { ...entry, status: 'missing' as const };
     }
   });
@@ -366,6 +398,65 @@ export function getManifestSummary(): ManifestSummaryResponse {
     lastVerifiedAt,
     hasIssues
   };
+}
+
+/**
+ * Registers a remote-only object-storage dataset (e.g. uploaded directly to GCS
+ * via Hub resumable upload) without requiring the multi-GB file to be hydrated locally.
+ */
+export async function registerRemoteDataEntry(input: {
+  filepath: string;
+  sha256: string;
+  sizeBytes: number;
+  description?: string;
+  id?: string;
+  storage: DataStorageMetadata;
+}): Promise<DataManifestEntry> {
+  return withWriteLock(async () => {
+    const normalizedPath = isSharedDataPath(input.filepath)
+      ? input.filepath
+      : normalizeWorkspaceRelPath(input.filepath);
+    if (!normalizedPath) {
+      throw new Error('filepath is required');
+    }
+    const manifest = readManifest();
+    const id =
+      input.id ||
+      path
+        .basename(normalizedPath, path.extname(normalizedPath))
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '_')
+        .replace(/^_+|_+$/g, '') ||
+      `dataset_${Date.now()}`;
+
+    const entry: DataManifestEntry = {
+      id,
+      filepath: normalizedPath,
+      sha256: input.sha256,
+      sizeBytes: input.sizeBytes,
+      acquiredAt: new Date().toISOString(),
+      acquisition: {
+        method: 'upload',
+        sourceUrl: input.storage.uri
+      },
+      description: input.description || '',
+      excludeFromGit: true,
+      excludeFromPublication: true,
+      storage: input.storage
+    };
+
+    const existingIdx = manifest.entries.findIndex((e) => e.filepath === normalizedPath || e.id === id);
+    if (existingIdx >= 0) {
+      manifest.entries[existingIdx] = entry;
+    } else {
+      manifest.entries.push(entry);
+    }
+    manifest.schemaVersion = 2;
+    manifest.updatedAt = new Date().toISOString();
+    ensureDataGitignore();
+    writeManifestSync(manifest);
+    return entry;
+  });
 }
 
 export async function registerDataFile(input: {
@@ -719,8 +810,12 @@ export async function verifyManifest(): Promise<ManifestVerifyResponse> {
         }
 
         try {
-          const fullPath = resolveSafePath(entry.filepath);
+          const fullPath = resolveEntryPath(entry.filepath);
           if (!fs.existsSync(fullPath) || !fs.lstatSync(fullPath).isFile()) {
+            if (entry.storage?.syncStatus === 'remote_only' && entry.storage.uri) {
+              verifiedEntries.push({ ...entry, status: 'remote_only', scriptChanged });
+              continue;
+            }
             verifiedEntries.push({ ...entry, status: 'missing', scriptChanged });
             continue;
           }
@@ -735,7 +830,11 @@ export async function verifyManifest(): Promise<ManifestVerifyResponse> {
             scriptChanged
           });
         } catch {
-          verifiedEntries.push({ ...entry, status: 'missing', scriptChanged });
+          if (entry.storage?.syncStatus === 'remote_only' && entry.storage.uri) {
+            verifiedEntries.push({ ...entry, status: 'remote_only', scriptChanged });
+          } else {
+            verifiedEntries.push({ ...entry, status: 'missing', scriptChanged });
+          }
         }
       }
 
@@ -745,7 +844,7 @@ export async function verifyManifest(): Promise<ManifestVerifyResponse> {
 
       const hasIssues =
         untrackedRawFiles.length > 0 ||
-        verifiedEntries.some((e) => e.status !== 'verified') ||
+        verifiedEntries.some((e) => e.status !== 'verified' && e.status !== 'remote_only') ||
         leaks.gitTrackedRawFiles.length > 0 ||
         leaks.publicationLeaks.length > 0;
 

@@ -5,12 +5,21 @@
 
 # Dependencies
 node_modules/
-client/node_modules/
+**/node_modules/
 
 # Production build outputs
 client/dist/
+hub/dist/
+hub/client/dist/
+packages/shared/dist/
 dist/
 dist-server/
+
+# Terraform state & plugin caches
+**/.terraform/
+*.tfstate
+*.tfstate.*
+infra/gcp/terraform.tfvars
 
 # Python Virtual Environments & caches
 .venv/

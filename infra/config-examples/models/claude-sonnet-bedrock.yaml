@@ -1,0 +1,28 @@
+apiVersion: bionic.io/v1
+kind: ModelConfig
+metadata:
+  slug: claude-sonnet-bedrock
+  displayName: "Claude 3.7 Sonnet (AWS Bedrock)"
+  description: "Anthropic Claude hosted on AWS Bedrock via zero-key GCP-to-AWS OIDC STS federation"
+  allowedGroups:
+    - researchers
+    - admins
+  enabled: true
+spec:
+  provider: aws_bedrock
+  protocol: anthropic
+  modelId: "us.anthropic.claude-3-7-sonnet-20250219-v1:0"
+  region: "us-east-1"
+  auth:
+    type: aws_sts_web_identity
+    roleArn: "arn:aws:iam::123456789012:role/bionic-hub-bedrock-role"
+    audience: "sts.amazonaws.com"
+  limits:
+    maxContextTokens: 200000
+    maxOutputTokens: 8192
+    dailyBudgetUsdPerUser: 25
+    dailyBudgetUsdPerProject: 100
+  pricing:
+    inputPerMillionUsd: 3.00
+    outputPerMillionUsd: 15.00
+    cachedInputPerMillionUsd: 0.30

@@ -1,6 +1,6 @@
 import React, { useRef, useState } from 'react';
-import { RefreshCw, ExternalLink, LayoutDashboard, CheckCircle } from 'lucide-react';
-import { getBionicConfig } from '../../services/api';
+import { RefreshCw, ExternalLink, LayoutDashboard, CheckCircle, UploadCloud } from 'lucide-react';
+import { getBionicConfig, publishProjectReport } from '../../services/api';
 
 interface ReportViewerProps {
   lastUpdated?: number;
@@ -10,9 +10,29 @@ interface ReportViewerProps {
 export const ReportViewer: React.FC<ReportViewerProps> = ({ lastUpdated, isDragging = false }) => {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isPublishing, setIsPublishing] = useState(false);
+  const [publishStatus, setPublishStatus] = useState<string | null>(null);
   const [mountTs] = useState<number>(() => Date.now());
-  const baseUrl = getBionicConfig().baseUrl;
-  const reportUrl = `${baseUrl}/report/index.html`;
+  const cfg = getBionicConfig();
+  const baseUrl = cfg.baseUrl;
+  const isolatedOrigin = cfg.hubMode && cfg.reportsOrigin ? cfg.reportsOrigin : '';
+  const reportUrl = isolatedOrigin ? `${isolatedOrigin}/index.html` : `${baseUrl}/report/index.html`;
+
+  const handlePublish = async () => {
+    setIsPublishing(true);
+    setPublishStatus(null);
+    try {
+      const res = await publishProjectReport({
+        visibility: 'private',
+        title: `Published Report (${new Date().toISOString().slice(0, 10)})`
+      });
+      setPublishStatus(res.success ? 'Published via scripts/publish.sh' : `Publish failed: ${res.error}`);
+    } catch (err: any) {
+      setPublishStatus(`Publish error: ${err.message}`);
+    } finally {
+      setIsPublishing(false);
+    }
+  };
 
   const handleRefresh = () => {
     setIsRefreshing(true);
@@ -40,6 +60,17 @@ export const ReportViewer: React.FC<ReportViewerProps> = ({ lastUpdated, isDragg
         </div>
 
         <div className="flex items-center space-x-2">
+          {cfg.hubMode && !cfg.sandboxMode && (
+            <button
+              onClick={handlePublish}
+              disabled={isPublishing}
+              className="flex items-center space-x-1 px-2.5 py-1 rounded bg-accent text-white hover:opacity-90 transition cursor-pointer disabled:opacity-50"
+              title="Run scripts/publish.sh to verify and publish web-report"
+            >
+              <UploadCloud className="w-3.5 h-3.5" />
+              <span>{isPublishing ? 'Publishing…' : 'Publish'}</span>
+            </button>
+          )}
           <button
             onClick={handleRefresh}
             className="flex items-center space-x-1 px-2.5 py-1 rounded bg-panel hover:bg-surface text-ink border border-edge transition cursor-pointer"
@@ -59,12 +90,20 @@ export const ReportViewer: React.FC<ReportViewerProps> = ({ lastUpdated, isDragg
         </div>
       </div>
 
-      {/* Embedded Iframe (never force-inverted; pointer-events disabled during separator drags) */}
+      {publishStatus && (
+        <div className="px-4 py-1.5 text-xs bg-elevated border-b border-edge text-ink flex items-center justify-between">
+          <span>{publishStatus}</span>
+          <button onClick={() => setPublishStatus(null)} className="text-muted hover:text-ink cursor-pointer">Dismiss</button>
+        </div>
+      )}
+
+      {/* Embedded Iframe (isolated origin + strict sandbox in Hub Mode; pointer-events disabled during drags) */}
       <div className={`flex-1 w-full h-full bg-white relative ${isDragging ? 'pointer-events-none' : ''}`}>
         <iframe
           ref={iframeRef}
           key={lastUpdated}
           src={`${reportUrl}?t=${lastUpdated || mountTs}`}
+          sandbox={isolatedOrigin ? 'allow-scripts allow-downloads allow-popups' : undefined}
           className="w-full h-full border-none"
           title="Bionic Editor Web Report"
         />

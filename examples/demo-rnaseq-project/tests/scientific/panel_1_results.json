@@ -1,0 +1,20 @@
+[
+  {
+    "id": 1,
+    "statement": "Canonical tubular injury biomarkers (HAVCR1, LCN2) are significantly upregulated (log2FC >= 2.0, padj <= 0.05).",
+    "status": "PASS",
+    "comment": "HAVCR1 log2FC=2.925, LCN2 log2FC=2.91"
+  },
+  {
+    "id": 2,
+    "statement": "Housekeeping control genes (GAPDH, ACTB, RPLP0, B2M) exhibit |log2FC| < 0.25.",
+    "status": "PASS",
+    "comment": "Max housekeeping |log2FC|=0.044"
+  },
+  {
+    "id": 3,
+    "statement": "Tubular function marker UMOD is significantly downregulated (log2FC <= -1.0).",
+    "status": "PASS",
+    "comment": "UMOD log2FC=-1.526"
+  }
+]

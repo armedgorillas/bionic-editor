@@ -1,0 +1,44 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    profiles: ["local_docker"]
+    environment:
+      POSTGRES_DB: bionic_hub
+      POSTGRES_USER: bionic
+      POSTGRES_PASSWORD: ${LOCAL_PG_PASSWORD}
+    volumes:
+      - /srv/bionic-hub/pgdata:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bionic -d bionic_hub"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  hub:
+    build:
+      context: ../..
+      dockerfile: hub/Dockerfile
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - /srv/bionic-hub/hub.env
+    volumes:
+      - /srv/bionic-hub/git:/srv/bionic-hub/git
+      - /srv/bionic-hub/storage:/srv/bionic-hub/storage
+      - /srv/bionic-hub/certs:/srv/bionic-hub/certs:ro
+
+  caddy:
+    build:
+      context: ./caddy
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - /srv/bionic-hub/hub.env
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - /srv/bionic-hub/caddy-data:/data
+      - /srv/bionic-hub/caddy-config:/config
