@@ -81,6 +81,7 @@ export const App: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<TabId>('projects');
   const [projects, setProjects] = useState<ProjectRow[]>([]);
+  const [availableTemplates, setAvailableTemplates] = useState<Array<{ slug: string; display_name: string }>>([]);
   const [publications, setPublications] = useState<PublicationRow[]>([]);
   const [adminUsers, setAdminUsers] = useState<AdminUserRow[]>([]);
   const [adminData, setAdminData] = useState<{ templates: any[]; models: any[]; skills: any[]; mcp: any[] }>({
@@ -123,9 +124,20 @@ export const App: React.FC = () => {
       const { user: me } = await meRes.json();
       setUser(me);
 
-      const [pRes, pubRes] = await Promise.all([fetch('/api/v1/projects'), fetch('/api/v1/publications')]);
+      const [pRes, pubRes, tmplRes] = await Promise.all([
+        fetch('/api/v1/projects'),
+        fetch('/api/v1/publications'),
+        fetch('/api/v1/templates')
+      ]);
       if (pRes.ok) setProjects((await pRes.json()).projects || []);
       if (pubRes.ok) setPublications((await pubRes.json()).publications || []);
+      if (tmplRes.ok) {
+        const list = (await tmplRes.json()).templates || [];
+        setAvailableTemplates(list);
+        if (list.length > 0 && !list.some((t: any) => t.slug === newTemplate)) {
+          setNewTemplate(list[0].slug);
+        }
+      }
 
       if (me.role === 'admin') {
         const [t, m, s, mc, u] = await Promise.all([
@@ -157,7 +169,7 @@ export const App: React.FC = () => {
     });
     const out = await res.json();
     if (!res.ok) {
-      setAuthError(out.error || 'Sign-in failed');
+      setAuthError(out.message || out.error || 'Sign-in failed');
       return;
     }
     setLoginPassword('');
@@ -182,7 +194,7 @@ export const App: React.FC = () => {
     });
     const out = await res.json();
     if (!res.ok) {
-      setAuthError(out.error || 'Password setup failed');
+      setAuthError(out.message || out.error || 'Password setup failed');
       return;
     }
     setSetupToken('');
@@ -216,7 +228,7 @@ export const App: React.FC = () => {
     });
     const out = await res.json();
     if (!res.ok) {
-      setStatusBanner(`Invite failed: ${out.error}`);
+      setStatusBanner(`Invite failed: ${out.message || out.error}`);
       return;
     }
     setInviteEmail('');
@@ -250,7 +262,7 @@ export const App: React.FC = () => {
     });
     const out = await res.json();
     if (!res.ok) {
-      setStatusBanner(`Create failed: ${out.error || res.statusText}`);
+      setStatusBanner(`Create failed: ${out.message || out.error || res.statusText}`);
     } else {
       setNewName('');
       setStatusBanner(`Created project ${out.id} (${out.status})`);
@@ -265,7 +277,7 @@ export const App: React.FC = () => {
       body: JSON.stringify({ name: `${pub.title} (Fork)`, fromPublicationId: pub.id })
     });
     const out = await res.json();
-    setStatusBanner(res.ok ? `Forked module into ${out.id}` : `Fork failed: ${out.error}`);
+    setStatusBanner(res.ok ? `Forked module into ${out.id}` : `Fork failed: ${out.message || out.error}`);
     if (res.ok) {
       setTab('projects');
       await loadAll();
@@ -279,7 +291,7 @@ export const App: React.FC = () => {
       body: JSON.stringify({})
     });
     const out = await res.json();
-    setStatusBanner(res.ok ? `Started headless reproduction run ${out.runId}` : `Run failed: ${out.error}`);
+    setStatusBanner(res.ok ? `Started headless reproduction run ${out.runId}` : `Run failed: ${out.message || out.error}`);
   };
 
   const handleProjectAction = async (id: string, action: 'wake' | 'freeze' | 'delete') => {
@@ -288,7 +300,7 @@ export const App: React.FC = () => {
         ? await fetch(`/api/v1/projects/${id}`, { method: 'DELETE' })
         : await fetch(`/api/v1/projects/${id}/${action}`, { method: 'POST' });
     const out = await res.json();
-    setStatusBanner(res.ok ? `${id}: ${out.status}` : `Action failed: ${out.error}`);
+    setStatusBanner(res.ok ? `${id}: ${out.status}` : `Action failed: ${out.message || out.error}`);
     await loadAll();
   };
 
@@ -482,11 +494,26 @@ export const App: React.FC = () => {
               </div>
               <div>
                 <label className="block text-xs text-slate-400 mb-1">VM Template</label>
-                <input
-                  value={newTemplate}
-                  onChange={(e) => setNewTemplate(e.target.value)}
-                  className="w-44 rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-white"
-                />
+                {availableTemplates.length > 0 ? (
+                  <select
+                    value={newTemplate}
+                    onChange={(e) => setNewTemplate(e.target.value)}
+                    className="w-52 rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-white"
+                  >
+                    {availableTemplates.map((t) => (
+                      <option key={t.slug} value={t.slug}>
+                        {t.display_name} ({t.slug})
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    value={newTemplate}
+                    onChange={(e) => setNewTemplate(e.target.value)}
+                    placeholder="Sync template via bionic-ctl"
+                    className="w-48 rounded-lg bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-white"
+                  />
+                )}
               </div>
               <div>
                 <label className="block text-xs text-slate-400 mb-1">Idle Freeze (min)</label>

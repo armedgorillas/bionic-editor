@@ -80,6 +80,16 @@ export async function createHubServer(overrides?: Partial<HubConfig>): Promise<H
 
   const app = Fastify({ logger: false, bodyLimit: 30 * 1024 * 1024 });
 
+  // Always surface the real error message in both `error` and `message` fields
+  app.setErrorHandler((err: any, _req, reply) => {
+    const statusCode = typeof err?.statusCode === 'number' && err.statusCode >= 400 ? err.statusCode : 500;
+    const message = err?.message || 'Internal Server Error';
+    if (statusCode >= 500) {
+      console.error('[Bionic Hub] Unhandled error:', err);
+    }
+    reply.code(statusCode).send({ statusCode, error: message, message });
+  });
+
   app.addContentTypeParser(
     ['application/gzip', 'application/octet-stream', 'application/x-git-upload-pack-request', 'application/x-git-receive-pack-request'],
     { parseAs: 'buffer' },
@@ -357,7 +367,20 @@ export async function createHubServer(overrides?: Partial<HubConfig>): Promise<H
     return reply.redirect(`${targetOrigin}/__bionic_auth/callback?code=${encodeURIComponent(code)}&next=${encodeURIComponent(next)}`);
   });
 
-  // --- Projects & Reproducible Runs API (ALL guarded by requireProjectRole, #1!) ---
+  // --- Templates & Projects & Reproducible Runs API (ALL guarded by requireProjectRole, #1!) ---
+  app.get('/api/v1/templates', async (req, reply) => {
+    const user = await requireHubUser(req, reply);
+    if (!user) return;
+    const res = await db.query(
+      `SELECT t.slug, t.display_name, t.description, t.default_idle_timeout_min, t.max_idle_timeout_min
+       FROM templates t
+       WHERE $1 = 'admin' OR 'admins' = ANY($2::text[]) OR t.allowed_group_ids && $2::text[]
+       ORDER BY t.slug ASC`,
+      [user.role, user.groupSlugs]
+    );
+    return { templates: res.rows };
+  });
+
   app.get('/api/v1/projects', async (req, reply) => {
     const user = await requireHubUser(req, reply);
     if (!user) return;
