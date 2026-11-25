@@ -15,15 +15,11 @@ hub.{$HUB_DOMAIN} {
   reverse_proxy 127.0.0.1:4000
 }
 
+# Demo mode (HUB_PUBLIC_REPORTS_REQUIRE_AUTH=true):
+# Route ALL of public-reports.<domain> through Hub's authenticated proxy so the GCS bucket
+# stays 100% private (public_access_prevention = "enforced", zero allUsers IAM).
+# For enterprise deployments where the client secures their own static site directly,
+# forward /reports/*/latest* to Hub and serve immutable /reports/*/v*/* directly from GCS/CDN.
 public-reports.{$HUB_DOMAIN} {
-  handle /reports/*/latest* {
-    rewrite * /_public{uri}
-    reverse_proxy 127.0.0.1:4000
-  }
-  handle {
-    rewrite * /{$GCP_STATIC_PUBLIC_BUCKET}{uri}
-    reverse_proxy https://storage.googleapis.com {
-      header_up Host storage.googleapis.com
-    }
-  }
+  reverse_proxy 127.0.0.1:4000
 }

@@ -13,11 +13,13 @@ export interface AuthenticatedUser {
   sessionId?: string;
 }
 
+export type OriginScope = 'editor' | 'live_report' | 'publication' | 'public_reports_site';
+
 export interface ScopedOriginSession {
   id: string;
   parentSessionId: string;
   userId: string;
-  scope: 'editor' | 'live_report' | 'publication';
+  scope: OriginScope;
   resourceId: string;
   targetOrigin: string;
   expiresAt: Date;
@@ -31,7 +33,7 @@ export function generateOpaqueToken(bytes = 32): string {
   return crypto.randomBytes(bytes).toString('base64url');
 }
 
-export function cookieNameForScope(scope: 'hub' | 'editor' | 'live_report' | 'publication', devMode: boolean): string {
+export function cookieNameForScope(scope: 'hub' | OriginScope, devMode: boolean): string {
   const prefix = devMode ? '' : '__Host-';
   switch (scope) {
     case 'hub':
@@ -40,6 +42,7 @@ export function cookieNameForScope(scope: 'hub' | 'editor' | 'live_report' | 'pu
       return `${prefix}bionic_editor_session`;
     case 'live_report':
     case 'publication':
+    case 'public_reports_site':
       return `${prefix}bionic_report_session`;
   }
 }
@@ -154,7 +157,7 @@ export class SessionService {
     userId: string;
     parentSessionId: string;
     targetOrigin: string;
-    scope: 'editor' | 'live_report' | 'publication';
+    scope: OriginScope;
     resourceId: string;
   }): Promise<string> {
     const rawCode = generateOpaqueToken(32);
@@ -238,7 +241,7 @@ export class SessionService {
   async validateScopedOriginCookie(
     rawToken: string,
     expectedOrigin: string,
-    expectedScope: 'editor' | 'live_report' | 'publication',
+    expectedScope: OriginScope,
     expectedResourceId: string
   ): Promise<ScopedOriginSession | null> {
     if (!rawToken) return null;

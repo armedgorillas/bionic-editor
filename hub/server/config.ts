@@ -16,12 +16,15 @@ export interface HubConfig {
   apiPoolMax: number;
   workerPoolMax: number;
 
-  // Auth / OIDC
+  // Auth / OIDC & Demo Local Auth
   oidcIssuer: string;
   oidcClientId: string;
   oidcClientSecret: string;
   oidcClientSecretRef: string;
   bootstrapAdminEmail: string;
+  bootstrapAdminPassword: string;
+  localAuthEnabled: boolean;
+  publicReportsRequireAuth: boolean;
   sessionTtlHours: number;
 
   // GCP & Compute
@@ -111,6 +114,9 @@ export function loadHubConfig(env: NodeJS.ProcessEnv = process.env): HubConfig {
     oidcClientSecret: env.OIDC_CLIENT_SECRET || '',
     oidcClientSecretRef: env.OIDC_CLIENT_SECRET_REF || '',
     bootstrapAdminEmail: (env.BIONIC_BOOTSTRAP_ADMIN_EMAIL || '').toLowerCase().trim(),
+    bootstrapAdminPassword: env.BIONIC_BOOTSTRAP_ADMIN_PASSWORD || '',
+    localAuthEnabled: env.HUB_LOCAL_AUTH_ENABLED === 'true',
+    publicReportsRequireAuth: env.HUB_PUBLIC_REPORTS_REQUIRE_AUTH === 'true',
     sessionTtlHours: parseInt(env.HUB_SESSION_TTL_HOURS || '24', 10),
 
     computeProvider: (env.HUB_COMPUTE_PROVIDER as 'gcp' | 'local') || 'local',

@@ -13,8 +13,11 @@ import type { HubCertificateAuthority } from '../auth/ca.js';
 import { extractSpiffeSanFromPeerCert } from '../auth/ca.js';
 import type { ProjectOrchestrator } from '../projects/orchestrator.js';
 
+import type { OriginScope } from '../auth/sessions.js';
+import type { PublishService } from '../publish/service.js';
+
 export interface ParsedOriginRoute {
-  scope: 'editor' | 'live_report' | 'publication';
+  scope: OriginScope;
   resourceId: string;
   origin: string;
 }
@@ -24,6 +27,14 @@ export function parseSubdomainHost(hostHeader: string | undefined, cfg: HubConfi
   const hostNoPort = hostHeader.split(':')[0].toLowerCase();
   const scheme = cfg.devMode ? 'http' : 'https';
   const origin = `${scheme}://${hostHeader.toLowerCase()}`;
+
+  // Demo mode authenticated publication site (`public-reports.<domain>`)
+  if (cfg.publicReportsRequireAuth) {
+    const pubReportsHost = new URL(cfg.publicReportsOrigin).hostname.toLowerCase();
+    if (hostNoPort === pubReportsHost) {
+      return { scope: 'public_reports_site', resourceId: 'site', origin };
+    }
+  }
 
   const editorSuffix = `.editors.${cfg.domain.toLowerCase()}`;
   if (hostNoPort.endsWith(editorSuffix)) {
@@ -85,7 +96,8 @@ export class EditorReverseProxy {
     private readonly cfg: HubConfig,
     private readonly sessions: SessionService,
     private readonly ca: HubCertificateAuthority,
-    private readonly orchestrator: ProjectOrchestrator
+    private readonly orchestrator: ProjectOrchestrator,
+    private readonly publishService?: PublishService
   ) {}
 
   async handleHttpRequest(route: ParsedOriginRoute, req: FastifyRequest, reply: FastifyReply): Promise<void> {
@@ -125,6 +137,12 @@ export class EditorReverseProxy {
     // 3. Authenticated private/org published reports (`<pub-id>.reports.<domain>`) — Security C3 + #5
     if (route.scope === 'publication') {
       await this.servePrivatePublicationAsset(route.resourceId, urlPath, reply);
+      return;
+    }
+
+    // 3b. Demo-mode authenticated publication bucket (`public-reports.<domain>` when HUB_PUBLIC_REPORTS_REQUIRE_AUTH=true)
+    if (route.scope === 'public_reports_site') {
+      await this.serveAuthenticatedPublicSiteAsset(urlPath, reply);
       return;
     }
 
@@ -270,6 +288,84 @@ export class EditorReverseProxy {
     }
 
     reply.code(404).send({ error: 'Unsupported publication artifact URI' });
+  }
+
+  /**
+   * Demo-mode authenticated proxy for `public-reports.<domain>` so the publication GCS bucket
+   * can enforce `public_access_prevention = "enforced"` (zero public IAM) while authenticated
+   * demo users can still view all published reports seamlessly!
+   */
+  private async serveAuthenticatedPublicSiteAsset(urlPath: string, reply: FastifyReply): Promise<void> {
+    let cleanPath: string;
+    try {
+      cleanPath = decodeURIComponent(urlPath.split('?')[0]).replace(/^\/+/, '');
+    } catch {
+      reply.code(400).send({ error: 'Invalid path encoding' });
+      return;
+    }
+    if (!cleanPath || cleanPath.includes('..') || cleanPath.includes('\0') || cleanPath.includes('_bionic_meta')) {
+      reply.code(403).send({ error: 'Forbidden path' });
+      return;
+    }
+
+    // Handle `/reports/<slug>/latest` or `/reports/<slug>/latest/*` redirects
+    const latestMatch = cleanPath.match(/^reports\/([a-z0-9-]+)\/latest(?:\/(.*))?$/);
+    if (latestMatch && this.publishService) {
+      const slug = latestMatch[1];
+      const rest = (latestMatch[2] || 'index.html').replace(/^\/+/, '') || 'index.html';
+      const ver = await this.publishService.resolveLatestPublicVersion(slug);
+      if (!ver) {
+        reply.code(404).send({ error: 'No publication found for this project' });
+        return;
+      }
+      reply.header('Cache-Control', 'private, no-store').redirect(`/reports/${slug}/v${ver}/${rest}`);
+      return;
+    }
+
+    const effectivePath = cleanPath.endsWith('/') ? `${cleanPath}index.html` : cleanPath;
+    const mime = guessMimeType(effectivePath);
+
+    if (this.cfg.gcpStaticPublicBucket) {
+      const client = await this.googleAuth.getClient();
+      const { token } = await client.getAccessToken();
+      const gcsRes = await fetch(
+        `https://storage.googleapis.com/storage/v1/b/${encodeURIComponent(this.cfg.gcpStaticPublicBucket)}/o/${encodeURIComponent(effectivePath)}?alt=media`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (!gcsRes.ok) {
+        reply.code(gcsRes.status === 404 ? 404 : 502).send({ error: 'Report asset not found' });
+        return;
+      }
+      reply.hijack();
+      reply.raw.writeHead(200, {
+        'Content-Type': mime,
+        'X-Content-Type-Options': 'nosniff',
+        'Cache-Control': 'private, no-store'
+      });
+      if (gcsRes.body) {
+        for await (const chunk of gcsRes.body as any) reply.raw.write(chunk);
+      }
+      reply.raw.end();
+      return;
+    }
+
+    const rootDir = path.resolve(this.cfg.localStorageDir, 'static-public');
+    const full = path.resolve(rootDir, effectivePath);
+    if (full !== rootDir && !full.startsWith(rootDir + path.sep)) {
+      reply.code(403).send({ error: 'Forbidden' });
+      return;
+    }
+    if (!fs.existsSync(full) || !fs.statSync(full).isFile()) {
+      reply.code(404).send({ error: 'Report asset not found' });
+      return;
+    }
+    reply.hijack();
+    reply.raw.writeHead(200, {
+      'Content-Type': mime,
+      'X-Content-Type-Options': 'nosniff',
+      'Cache-Control': 'private, no-store'
+    });
+    fs.createReadStream(full).pipe(reply.raw);
   }
 
   private async forwardHttpToVm(

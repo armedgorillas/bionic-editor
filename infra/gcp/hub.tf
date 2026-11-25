@@ -120,6 +120,8 @@ resource "google_compute_instance" "hub" {
       HUB_JWT_PRIVATE_KEY_FILE=/srv/bionic-hub/certs/jwt-ed25519.key
       HUB_JWT_PUBLIC_KEY_FILE=/srv/bionic-hub/certs/jwt-ed25519.pub
       BIONIC_BOOTSTRAP_ADMIN_EMAIL=${var.bootstrap_admin_email}
+      HUB_LOCAL_AUTH_ENABLED=${var.local_auth_enabled}
+      HUB_PUBLIC_REPORTS_REQUIRE_AUTH=${var.public_reports_require_auth}
       OIDC_ISSUER=${var.oidc_issuer}
       OIDC_CLIENT_ID=${var.oidc_client_id}
       OIDC_CLIENT_SECRET_REF=gcp-sm://projects/${var.project_id}/secrets/bionic-oidc-client-secret/versions/latest

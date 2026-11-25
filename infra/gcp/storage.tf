@@ -43,11 +43,14 @@ resource "google_storage_bucket" "static_reports_private" {
   public_access_prevention    = "enforced"
 }
 
-# 4. Public Published Reports Bucket (Exclusively for visibility='public' reports!)
+# 4. Published Reports Site Bucket
+# Demo mode (public_reports_require_auth = true): strictly PRIVATE (enforced public_access_prevention, zero allUsers IAM!)
+# Enterprise mode (public_reports_require_auth = false): client secures static site via CDN/IAP/WAF
 resource "google_storage_bucket" "static_reports_public" {
   name                        = "${local.bprefix}-reports-public"
   location                    = var.region
   uniform_bucket_level_access = true
+  public_access_prevention    = var.public_reports_require_auth ? "enforced" : "inherited"
 
   website {
     main_page_suffix = "index.html"
@@ -56,6 +59,7 @@ resource "google_storage_bucket" "static_reports_public" {
 }
 
 resource "google_storage_bucket_iam_member" "static_reports_public_read" {
+  count  = var.public_reports_require_auth ? 0 : 1
   bucket = google_storage_bucket.static_reports_public.name
   role   = "roles/storage.objectViewer"
   member = "allUsers"

@@ -68,3 +68,15 @@ variable "dns_provider" {
   type        = string
   default     = "googleclouddns"
 }
+
+variable "local_auth_enabled" {
+  description = "Demo-only: enable manual admin user invites with email/password setup (set false for enterprise OIDC)"
+  type        = bool
+  default     = true
+}
+
+variable "public_reports_require_auth" {
+  description = "Demo-only: enforce authentication on the publication bucket (no allUsers IAM; proxied via Hub)"
+  type        = bool
+  default     = true
+}

