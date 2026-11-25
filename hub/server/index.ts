@@ -75,7 +75,7 @@ export async function createHubServer(overrides?: Partial<HubConfig>): Promise<H
   const llmGateway = new LlmGatewayService(db, cfg, secrets);
   const mcpGateway = new McpGatewayService(db, cfg, secrets, sessions);
   const orchestrator = new ProjectOrchestrator(db, cfg, compute, gitProvider);
-  const editorProxy = new EditorReverseProxy(db, cfg, sessions, ca, orchestrator, publishService);
+  const editorProxy = new EditorReverseProxy(db, cfg, sessions, ca, orchestrator, publishService, compute);
   const workers = new HubWorkerEngine(db, cfg, compute, ca);
 
   const app = Fastify({ logger: false, bodyLimit: 30 * 1024 * 1024 });
@@ -622,18 +622,39 @@ export async function createHubServer(overrides?: Partial<HubConfig>): Promise<H
     const issued = await ca.signVmCsr({ csrPem: body.csrPem, projectId, instanceId, ttlHours: 72 });
     const workloadJwt = await ca.mintWorkloadJwt({ projectId, vmInstanceId: instanceId, kind: 'editor' }, 900);
 
+    // Resolve and persist authoritative internal VPC IP from GCE (or fallback to private req.ip)
+    let resolvedInternalIp: string | null = null;
+    try {
+      const zone = gceZone || proj.compute_zone || cfg.gcpDefaultZone;
+      const instName = proj.compute_instance_name || projectId;
+      const instInfo = await compute.getInstance(zone, instName);
+      if (instInfo?.internalIp) resolvedInternalIp = instInfo.internalIp;
+    } catch {
+      // Fallback below
+    }
+    if (!resolvedInternalIp && req.ip && /^(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|127\.)/.test(req.ip)) {
+      resolvedInternalIp = req.ip;
+    }
+
     await db.query(
       `UPDATE projects
        SET compute_instance_id = COALESCE(compute_instance_id, $2),
+           compute_internal_ip = COALESCE($5, compute_internal_ip),
            vm_cert_serial = $3,
            vm_cert_expires_at = $4,
            vm_attested_at = NOW(),
            status = CASE WHEN status IN ('starting', 'resuming') THEN 'running' ELSE status END,
            updated_at = NOW()
        WHERE id = $1`,
-      [projectId, instanceId, issued.serialHex, issued.expiresAt]
+      [projectId, instanceId, issued.serialHex, issued.expiresAt, resolvedInternalIp]
     );
-    await db.notify('project_state_changes', { projectId, status: 'running', attested: true, gceProjectId });
+    await db.notify('project_state_changes', {
+      projectId,
+      status: 'running',
+      attested: true,
+      internalIp: resolvedInternalIp,
+      gceProjectId
+    });
 
     return {
       certPem: issued.certPem,

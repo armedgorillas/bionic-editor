@@ -15,6 +15,7 @@ import type { ProjectOrchestrator } from '../projects/orchestrator.js';
 
 import type { OriginScope } from '../auth/sessions.js';
 import type { PublishService } from '../publish/service.js';
+import type { ComputeProvider } from '../compute/provider.js';
 
 export interface ParsedOriginRoute {
   scope: OriginScope;
@@ -97,7 +98,8 @@ export class EditorReverseProxy {
     private readonly sessions: SessionService,
     private readonly ca: HubCertificateAuthority,
     private readonly orchestrator: ProjectOrchestrator,
-    private readonly publishService?: PublishService
+    private readonly publishService?: PublishService,
+    private readonly compute?: ComputeProvider
   ) {}
 
   async handleHttpRequest(route: ParsedOriginRoute, req: FastifyRequest, reply: FastifyReply): Promise<void> {
@@ -155,12 +157,32 @@ export class EditorReverseProxy {
         Connection: 'keep-alive'
       });
 
-      const cur = await this.db.query<{ status: string; status_message: string | null }>(
-        `SELECT status, status_message FROM projects WHERE id = $1`,
+      const cur = await this.db.query<{
+        status: string;
+        status_message: string | null;
+        compute_internal_ip: string | null;
+        compute_zone: string | null;
+        compute_instance_name: string | null;
+      }>(
+        `SELECT status, status_message, compute_internal_ip, compute_zone, compute_instance_name FROM projects WHERE id = $1`,
         [route.resourceId]
       );
       const curRow = cur.rows[0];
-      if (!curRow || curRow.status === 'running' || curRow.status === 'error') {
+      let curIp = curRow?.compute_internal_ip || null;
+      if (curRow?.status === 'running' && !curIp && this.compute && curRow.compute_instance_name) {
+        try {
+          const info = await this.compute.getInstance(curRow.compute_zone || this.cfg.gcpDefaultZone, curRow.compute_instance_name);
+          if (info?.internalIp) {
+            curIp = info.internalIp;
+            await this.db.query(`UPDATE projects SET compute_internal_ip = $2, updated_at = NOW() WHERE id = $1`, [
+              route.resourceId,
+              curIp
+            ]);
+          }
+        } catch {}
+      }
+      // Only signal ready when BOTH status === 'running' AND compute_internal_ip is populated (prevents infinite reload!)
+      if (!curRow || (curRow.status === 'running' && curIp) || curRow.status === 'error') {
         reply.raw.write(
           `data: ${JSON.stringify({ projectId: route.resourceId, status: curRow?.status || 'error', error: curRow?.status_message })}\n\n`
         );
@@ -171,7 +193,7 @@ export class EditorReverseProxy {
       const onState = (ev: any) => {
         if (ev?.projectId === route.resourceId) {
           reply.raw.write(`data: ${JSON.stringify(ev)}\n\n`);
-          if (ev.status === 'running' || ev.status === 'error') {
+          if ((ev.status === 'running' && ev.internalIp) || ev.status === 'error') {
             cleanup();
             reply.raw.end();
           }
@@ -189,7 +211,7 @@ export class EditorReverseProxy {
 
     // 5. Live Editor or live Report preview
     const projRes = await this.db.query(
-      `SELECT id, status, compute_internal_ip FROM projects WHERE id = $1 AND status <> 'deleted'`,
+      `SELECT id, status, compute_internal_ip, compute_zone, compute_instance_name FROM projects WHERE id = $1 AND status <> 'deleted'`,
       [route.resourceId]
     );
     const proj = projRes.rows[0];
@@ -198,7 +220,22 @@ export class EditorReverseProxy {
       return;
     }
 
-    if (proj.status !== 'running' || !proj.compute_internal_ip) {
+    // Self-heal missing compute_internal_ip for already-running VMs by querying GCE directly
+    let internalIp: string | null = proj.compute_internal_ip || null;
+    if (proj.status === 'running' && !internalIp && this.compute && proj.compute_instance_name) {
+      try {
+        const info = await this.compute.getInstance(proj.compute_zone || this.cfg.gcpDefaultZone, proj.compute_instance_name);
+        if (info?.internalIp) {
+          internalIp = info.internalIp;
+          await this.db.query(`UPDATE projects SET compute_internal_ip = $2, updated_at = NOW() WHERE id = $1`, [
+            proj.id,
+            internalIp
+          ]);
+        }
+      } catch {}
+    }
+
+    if (proj.status !== 'running' || !internalIp) {
       if (['frozen', 'stopped', 'archived'].includes(proj.status)) {
         await this.orchestrator.requestWakeProject(proj.id);
       }
@@ -210,7 +247,7 @@ export class EditorReverseProxy {
       this.db.query(`UPDATE projects SET last_activity_at = NOW() WHERE id = $1`, [proj.id]).catch(() => {});
     }
 
-    await this.forwardHttpToVm(proj.id, proj.compute_internal_ip, route, scoped.userId, req, reply);
+    await this.forwardHttpToVm(proj.id, internalIp, route, scoped.userId, req, reply);
   }
 
   private async servePrivatePublicationAsset(pubId: string, urlPath: string, reply: FastifyReply): Promise<void> {
@@ -542,7 +579,7 @@ function renderAutoWakeHtml(projectId: string, status: string): string {
       try {
         const ev = JSON.parse(e.data);
         document.getElementById('status').textContent = ev.status || 'starting';
-        if (ev.status === 'running') { es.close(); location.reload(); }
+        if (ev.status === 'running') { es.close(); setTimeout(() => location.reload(), 600); }
         if (ev.status === 'error') { document.getElementById('status').textContent = 'error: ' + (ev.error || 'wake failed'); es.close(); }
       } catch {}
     };
