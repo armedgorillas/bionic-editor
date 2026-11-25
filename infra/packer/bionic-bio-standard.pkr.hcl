@@ -7,13 +7,39 @@ packer {
   }
 }
 
-variable "project_id" { type = string }
-variable "zone" { type = string; default = "us-central1-a" }
-variable "network" { type = string; default = "bionic-hub-vpc" }
-variable "subnetwork" { type = string; default = "bionic-editors-subnet" }
-variable "bionic_editor_tarball" { type = string; default = "../../bioniceditor.tgz" }
-variable "bionic_hub_tarball" { type = string; default = "../../bionic-hub-daemon.tgz" }
-variable "opencode_version" { type = string; default = "2.0.0" }
+variable "project_id" {
+  type = string
+}
+
+variable "zone" {
+  type    = string
+  default = "us-central1-a"
+}
+
+variable "network" {
+  type    = string
+  default = "bionic-hub-vpc"
+}
+
+variable "subnetwork" {
+  type    = string
+  default = "bionic-editors-subnet"
+}
+
+variable "bionic_editor_tarball" {
+  type    = string
+  default = "../../bioniceditor.tgz"
+}
+
+variable "bionic_hub_tarball" {
+  type    = string
+  default = "../../bionic-hub-daemon.tgz"
+}
+
+variable "opencode_version" {
+  type    = string
+  default = "2.0.0"
+}
 
 source "googlecompute" "bio_standard" {
   project_id          = var.project_id

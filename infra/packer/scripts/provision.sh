@@ -14,7 +14,7 @@ sudo apt-get install -y -qq nodejs
 curl -LsSf https://astral.sh/uv/install.sh | sudo env UV_INSTALL_DIR=/usr/local/bin sh
 
 # Install pinned OpenCode V2 CLI
-npm install -g "opencode-ai@${OPENCODE_VERSION:-latest}" || curl -fsSL https://opencode.ai/install | sudo env OPENCODE_INSTALL_DIR=/usr/local/bin bash || true
+sudo npm install -g "opencode-ai@${OPENCODE_VERSION:-latest}" || curl -fsSL https://opencode.ai/install | sudo env OPENCODE_INSTALL_DIR=/usr/local/bin bash || true
 
 # Install gcsfuse for read-only shared institutional datasets (/mnt/shared-data)
 export GCSFUSE_REPO="gcsfuse-$(lsb_release -c -s)"
@@ -26,12 +26,12 @@ sudo apt-get update -qq && sudo apt-get install -y -qq gcsfuse
 sudo mkdir -p /opt/bioniceditor /opt/bionic-hub /usr/local/libexec
 if [[ -f /tmp/bioniceditor.tgz ]]; then
   sudo tar -xzf /tmp/bioniceditor.tgz -C /opt/bioniceditor --strip-components=1
-  (cd /opt/bioniceditor && sudo npm ci --omit=dev)
+  (cd /opt/bioniceditor && sudo npm install --omit=dev)
   rm -f /tmp/bioniceditor.tgz
 fi
 if [[ -f /tmp/bionic-hub-daemon.tgz ]]; then
+  # bionic-daemon uses Node.js built-ins only (zero external npm dependencies needed)
   sudo tar -xzf /tmp/bionic-hub-daemon.tgz -C /opt/bionic-hub
-  (cd /opt/bionic-hub && sudo npm ci --omit=dev)
   rm -f /tmp/bionic-hub-daemon.tgz
 fi
 
