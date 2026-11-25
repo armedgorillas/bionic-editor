@@ -19,7 +19,6 @@ dist-server/
 **/.terraform/
 *.tfstate
 *.tfstate.*
-infra/gcp/terraform.tfvars
 
 # Python Virtual Environments & caches
 .venv/
