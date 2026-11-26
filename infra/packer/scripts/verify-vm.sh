@@ -3,17 +3,19 @@
 #
 # Modes:
 #   --image-build  Run during Packer image build (verifies binaries, services, permissions, nftables, OpenCode V2).
-#   --live         (Default) Run on a booted project VM (runs all image checks + live services, mTLS, workspace
-#                  template, IMDS guard, Hub LLM shim, OpenCode V2 model registration, and Hub Mode guards).
+#   --ci-live      Run in GitHub Actions Ubuntu 24.04 CI (all live checks except GCE-only bootstrap/PD/IMDS firewall).
+#   --live         (Default) Run on a booted GCP project VM (runs all image checks + full live GCE runtime checks).
 set -uo pipefail
 
 MODE="live"
 if [[ "${1:-}" == "--image-build" ]]; then
   MODE="image-build"
+elif [[ "${1:-}" == "--ci-live" ]]; then
+  MODE="ci-live"
 elif [[ "${1:-}" == "--live" || -z "${1:-}" ]]; then
   MODE="live"
 else
-  echo "Usage: $0 [--image-build | --live]" >&2
+  echo "Usage: $0 [--image-build | --ci-live | --live]" >&2
   exit 2
 fi
 
@@ -139,7 +141,11 @@ fi
 # ==============================================================================
 section "5. Live Services & Env Isolation"
 
-for unit in bionic-vm-bootstrap.service bionic-daemon.service bioniceditor.service nftables.service; do
+LIVE_UNITS=(bionic-daemon.service bioniceditor.service)
+if [[ "$MODE" == "live" ]]; then
+  LIVE_UNITS=(bionic-vm-bootstrap.service bionic-daemon.service bioniceditor.service nftables.service)
+fi
+for unit in "${LIVE_UNITS[@]}"; do
   if systemctl is-active "$unit" >/dev/null 2>&1; then
     pass "systemd active: ${unit}"
   else
@@ -205,16 +211,20 @@ fi
 # ==============================================================================
 section "7. Live GCE IMDS Guard (nftables)"
 
-if sudo -u bionic-user curl -fsS --max-time 2 -H "Metadata-Flavor: Google" http://169.254.169.254/computeMetadata/v1/instance/name >/dev/null 2>&1; then
-  fail "SECURITY: bionic-user was able to reach GCE IMDS (169.254.169.254:80)"
+if [[ "$MODE" == "ci-live" ]]; then
+  pass "Skipped live nftables IMDS probe in --ci-live mode (nftables syntax validated in section 3)"
 else
-  pass "bionic-user is BLOCKED from GCE IMDS (169.254.169.254:80)"
-fi
+  if sudo -u bionic-user curl -fsS --max-time 2 -H "Metadata-Flavor: Google" http://169.254.169.254/computeMetadata/v1/instance/name >/dev/null 2>&1; then
+    fail "SECURITY: bionic-user was able to reach GCE IMDS (169.254.169.254:80)"
+  else
+    pass "bionic-user is BLOCKED from GCE IMDS (169.254.169.254:80)"
+  fi
 
-if sudo -u bionic-daemon curl -fsS --max-time 2 -H "Metadata-Flavor: Google" http://169.254.169.254/computeMetadata/v1/instance/name >/dev/null 2>&1; then
-  pass "bionic-daemon CAN reach GCE IMDS for attestation"
-else
-  warn "bionic-daemon could not reach GCE IMDS (expected only on GCE VMs)"
+  if sudo -u bionic-daemon curl -fsS --max-time 2 -H "Metadata-Flavor: Google" http://169.254.169.254/computeMetadata/v1/instance/name >/dev/null 2>&1; then
+    pass "bionic-daemon CAN reach GCE IMDS for attestation"
+  else
+    warn "bionic-daemon could not reach GCE IMDS (expected only on GCE VMs)"
+  fi
 fi
 
 # ==============================================================================

@@ -8,6 +8,7 @@ on:
       - opened
       - synchronize
       - reopened
+  workflow_dispatch:
 
 concurrency:
   group: pr-${{ github.workflow }}-${{ github.ref }}
@@ -37,20 +38,57 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install root dependencies
-        run: npm ci
-
-      - name: Install client dependencies
-        run: npm --prefix client ci
+      - name: Install dependencies (editor + hub)
+        run: |
+          npm ci
+          npm --prefix client ci
+          npm --prefix packages/shared ci
+          npm --prefix hub ci
+          npm --prefix hub/client ci
 
       - name: Lint client codebase
         run: npm --prefix client run lint
 
-      - name: Build frontend and backend
-        run: npm run build
+      - name: Build editor and hub
+        run: |
+          npm --prefix packages/shared run build
+          npm --prefix hub/client run build
+          npm --prefix hub run build
+          npm run build
 
-      - name: Run test suite
-        run: npm test
+      - name: Run editor and hub test suites
+        run: |
+          npm test
+          npm --prefix hub test
 
       - name: Validate package contents
         run: npm pack --dry-run
+
+  vm-selftest:
+    name: Editor VM Provision & Self-Test (Ubuntu 24.04)
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: 'npm'
+
+      - name: Package Bionic Editor and Bionic Daemon tarballs
+        run: |
+          npm ci && npm --prefix client ci && npm run build && npm pack
+          mv bioniceditor-*.tgz /tmp/bioniceditor.tgz
+          npm --prefix packages/shared ci && npm --prefix packages/shared run build
+          npm --prefix hub ci && npm --prefix hub run build
+          tar -czf /tmp/bionic-hub-daemon.tgz -C hub package.json package-lock.json dist
+          cp infra/packer/scripts/verify-vm.sh /tmp/verify-vm.sh
+
+      - name: Run Packer VM provisioner & image-build self-test
+        run: bash infra/packer/scripts/provision.sh
+
+      - name: Run live VM self-test suite (systemd, mTLS, template, OpenCode V2, Hub shim)
+        run: node infra/packer/scripts/ci-vm-live-test.mjs
