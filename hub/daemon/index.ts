@@ -483,6 +483,17 @@ export class BionicVmDaemon {
           res.end(JSON.stringify(out));
           return;
         }
+        if (urlPath === '/api/internal/project-meta') {
+          const isPost = req.method === 'POST';
+          const out = await this.callLocalEditor(
+            '/api/hub-local/project-meta',
+            isPost ? 'POST' : 'GET',
+            isPost ? parsedBody : undefined
+          );
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(out));
+          return;
+        }
         res.writeHead(404);
         res.end('Not found');
       } catch (err: any) {

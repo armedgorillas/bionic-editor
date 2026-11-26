@@ -47,8 +47,15 @@ export function cookieNameForScope(scope: 'hub' | OriginScope, devMode: boolean)
   }
 }
 
-export function serializeHostOnlyCookie(name: string, value: string, maxAgeSec: number, devMode: boolean): string {
-  const parts = [`${name}=${value}`, 'Path=/', 'HttpOnly', 'SameSite=Lax', `Max-Age=${maxAgeSec}`];
+export function serializeHostOnlyCookie(
+  name: string,
+  value: string,
+  maxAgeSec: number,
+  devMode: boolean,
+  sameSite: 'Lax' | 'None' = 'Lax'
+): string {
+  const effectiveSameSite = sameSite === 'None' && !devMode ? 'None' : 'Lax';
+  const parts = [`${name}=${value}`, 'Path=/', 'HttpOnly', `SameSite=${effectiveSameSite}`, `Max-Age=${maxAgeSec}`];
   if (!devMode) parts.push('Secure');
   return parts.join('; ');
 }
@@ -227,9 +234,12 @@ export class SessionService {
       };
 
       const cookieName = cookieNameForScope(row.scope, this.cfg.devMode);
+      // Read-only report scopes use SameSite=None (Secure) so cross-origin sandboxed iframes
+      // (<prj>.editors.<domain> -> <prj>.reports.<domain>) preserve cookies across multi-page links.
+      const sameSite = row.scope === 'live_report' || row.scope === 'publication' ? 'None' : 'Lax';
       return {
         session,
-        cookieHeader: serializeHostOnlyCookie(cookieName, rawToken, ttlSec, this.cfg.devMode)
+        cookieHeader: serializeHostOnlyCookie(cookieName, rawToken, ttlSec, this.cfg.devMode, sameSite)
       };
     });
   }

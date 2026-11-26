@@ -5,6 +5,10 @@ import { ensureDirWithOwnership, atomicWriteFileSync, applyTargetOwnership } fro
 
 export const BIONIC_YAML_TEMPLATE = `schemaVersion: 1
 name: "bionic-analysis"
+title: "Scientific Analysis Project"
+summary: |
+  Summarize the research question, data sources, analytical workflow, and key findings here.
+  This summary is displayed on your project's landing page in Bionic Hub.
 environment:
   pythonLockfile: "requirements.txt"
 entrypoint:
@@ -393,19 +397,32 @@ if [[ -x "scripts/data-push.sh" ]]; then
   ./scripts/data-push.sh
 fi
 
-# 3. Capture Git commit snapshot (when in a git repo)
+# 3. Capture & push Git commit snapshot (auto-initializes Git inside Bionic Hub so forks clone the full module)
 GIT_SHA="uncommitted"
-if [[ "$NO_GIT" -eq 0 ]] && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  if [[ "$DRY_RUN" -eq 0 ]]; then
-    git add -A
-    if ! git diff --cached --quiet; then
-      git commit -m "publish: $TITLE"
-    fi
-    if git remote get-url origin >/dev/null 2>&1; then
-      git push origin HEAD
-    fi
+if [[ "$NO_GIT" -eq 0 ]]; then
+  if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1 && [[ -n "\${BIONIC_HUB_PUBLISH_URL:-}" ]]; then
+    git init -b main >/dev/null 2>&1 || git init >/dev/null 2>&1
   fi
-  GIT_SHA="$(git rev-parse HEAD 2>/dev/null || echo uncommitted)"
+  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    if [[ "$DRY_RUN" -eq 0 ]]; then
+      git config user.name >/dev/null 2>&1 || git config user.name "Bionic Researcher"
+      git config user.email >/dev/null 2>&1 || git config user.email "researcher@bionic.local"
+      git add -A
+      if ! git diff --cached --quiet; then
+        git commit -m "publish: $TITLE" >/dev/null
+      fi
+      HUB_GIT_URL="\${BIONIC_GIT_PROXY_URL:-}"
+      if [[ -z "$HUB_GIT_URL" && -n "\${BIONIC_SHIM_URL:-}" && -n "\${BIONIC_PROJECT_ID:-}" ]]; then
+        HUB_GIT_URL="\${BIONIC_SHIM_URL}/git/\${BIONIC_PROJECT_ID}.git"
+      fi
+      if [[ -n "$HUB_GIT_URL" && -n "\${BIONIC_LOCAL_SHIM_TOKEN:-}" ]]; then
+        git -c "http.extraHeader=X-Bionic-Shim-Token: \${BIONIC_LOCAL_SHIM_TOKEN}" push "$HUB_GIT_URL" HEAD:refs/heads/main --force
+      elif git remote get-url origin >/dev/null 2>&1; then
+        git push origin HEAD
+      fi
+    fi
+    GIT_SHA="$(git rev-parse HEAD 2>/dev/null || echo uncommitted)"
+  fi
 fi
 
 if [[ "$DRY_RUN" -eq 1 ]]; then

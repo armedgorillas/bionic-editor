@@ -207,7 +207,10 @@ export type McpServerConfig = z.infer<typeof McpServerConfigSchema>;
 export const BionicModuleManifestSchema = z.object({
   schemaVersion: z.literal(1),
   name: SlugSchema,
+  title: z.string().max(160).optional(),
+  summary: z.string().max(4000).optional(),
   description: z.string().max(1000).optional(),
+  tags: z.array(z.string().max(40)).max(20).optional(),
   environment: z.object({
     pythonLockfile: z.string().min(1).default('requirements.txt'),
     rLockfile: z.string().min(1).optional()

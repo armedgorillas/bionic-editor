@@ -97,13 +97,15 @@ export const ReportViewer: React.FC<ReportViewerProps> = ({ lastUpdated, isDragg
         </div>
       )}
 
-      {/* Embedded Iframe (isolated origin + strict sandbox in Hub Mode; pointer-events disabled during drags) */}
+      {/* Embedded Iframe (cross-origin isolated `<prj>.reports.<domain>` in Hub Mode; allow-same-origin lets
+          multi-page report links & relative fetch() send the report origin's own host-only cookie while remaining
+          strictly origin-isolated from Editor and Hub). */}
       <div className={`flex-1 w-full h-full bg-white relative ${isDragging ? 'pointer-events-none' : ''}`}>
         <iframe
           ref={iframeRef}
           key={lastUpdated}
           src={`${reportUrl}?t=${lastUpdated || mountTs}`}
-          sandbox={isolatedOrigin ? 'allow-scripts allow-downloads allow-popups' : undefined}
+          sandbox={isolatedOrigin ? 'allow-scripts allow-same-origin allow-downloads allow-popups' : undefined}
           className="w-full h-full border-none"
           title="Bionic Editor Web Report"
         />

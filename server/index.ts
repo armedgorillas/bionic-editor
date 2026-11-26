@@ -694,6 +694,195 @@ apiRouter.post('/hub-local/sync-config', requireDaemonToken, (req, res) => {
   }
 });
 
+function parseSimpleBionicYaml(raw: string): Record<string, any> {
+  const out: Record<string, any> = { raw };
+  const lines = raw.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const m = line.match(/^(name|title|description|summary)\s*:\s*(.*)$/);
+    if (!m) continue;
+    const key = m[1];
+    const val = m[2].trim();
+    if (val === '|' || val === '>') {
+      const blockLines: string[] = [];
+      for (let j = i + 1; j < lines.length; j++) {
+        if (/^\s+/.test(lines[j]) || lines[j].trim() === '') {
+          blockLines.push(lines[j].replace(/^ {1,2}/, ''));
+          i = j;
+        } else {
+          break;
+        }
+      }
+      out[key] = blockLines.join('\n').trim();
+    } else {
+      out[key] = val.replace(/^["']|["']$/g, '');
+    }
+  }
+  return out;
+}
+
+function updateBionicYamlFields(workspaceDir: string, updates: { title?: string; summary?: string }): Record<string, any> {
+  const yamlPath = path.join(workspaceDir, 'bionic.yaml');
+  let raw = fs.existsSync(yamlPath)
+    ? fs.readFileSync(yamlPath, 'utf-8')
+    : `schemaVersion: 1\nname: "bionic-analysis"\n`;
+
+  const setScalarOrBlock = (text: string, key: string, value: string, multiline: boolean): string => {
+    const lines = text.split(/\r?\n/);
+    const outLines: string[] = [];
+    let replaced = false;
+    for (let i = 0; i < lines.length; i++) {
+      if (new RegExp(`^${key}\\s*:`).test(lines[i])) {
+        // Skip any indented block lines following existing key
+        if (/:\s*[|>]\s*$/.test(lines[i])) {
+          while (i + 1 < lines.length && (/^\s+/.test(lines[i + 1]) || lines[i + 1].trim() === '')) {
+            i++;
+          }
+        }
+        if (multiline) {
+          outLines.push(`${key}: |`);
+          for (const sl of value.split(/\r?\n/)) {
+            outLines.push(`  ${sl}`);
+          }
+        } else {
+          outLines.push(`${key}: ${JSON.stringify(value)}`);
+        }
+        replaced = true;
+      } else {
+        outLines.push(lines[i]);
+      }
+    }
+    if (!replaced) {
+      // Insert after `name:` if present, else at end
+      const nameIdx = outLines.findIndex((l) => /^name\s*:/.test(l));
+      const insertLines = multiline
+        ? [`${key}: |`, ...value.split(/\r?\n/).map((sl) => `  ${sl}`)]
+        : [`${key}: ${JSON.stringify(value)}`];
+      if (nameIdx >= 0) {
+        outLines.splice(nameIdx + 1, 0, ...insertLines);
+      } else {
+        outLines.push(...insertLines);
+      }
+    }
+    return outLines.join('\n').replace(/\n*$/, '\n');
+  };
+
+  if (typeof updates.title === 'string') {
+    raw = setScalarOrBlock(raw, 'title', updates.title.trim().slice(0, 160), false);
+  }
+  if (typeof updates.summary === 'string') {
+    raw = setScalarOrBlock(raw, 'summary', updates.summary.trim().slice(0, 4000), true);
+  }
+
+  fs.writeFileSync(yamlPath, raw, 'utf-8');
+  applyTargetOwnership(yamlPath);
+  return parseSimpleBionicYaml(raw);
+}
+
+apiRouter.get('/hub-local/project-meta', requireDaemonToken, (_req, res) => {
+  try {
+    const skipDirs = new Set(['.venv', '.git', 'node_modules', 'lost+found', '__pycache__', '.pytest_cache']);
+    let totalBytes = 0;
+    let fileCount = 0;
+    let latestMtimeMs = 0;
+
+    const walk = (dir: string, depth: number) => {
+      if (depth > 8) return;
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const e of entries) {
+        if (skipDirs.has(e.name)) continue;
+        const full = path.join(dir, e.name);
+        let st: fs.Stats;
+        try {
+          st = fs.lstatSync(full);
+        } catch {
+          continue;
+        }
+        if (st.isSymbolicLink()) continue;
+        if (st.isDirectory()) {
+          walk(full, depth + 1);
+        } else if (st.isFile()) {
+          totalBytes += st.size;
+          fileCount++;
+          if (st.mtimeMs > latestMtimeMs) latestMtimeMs = st.mtimeMs;
+        }
+      }
+    };
+    walk(WORKSPACE_DIR, 0);
+
+    const topLevelItems: Array<{ name: string; path: string; isDirectory: boolean; sizeBytes: number; updatedAt: string }> = [];
+    try {
+      for (const e of fs.readdirSync(WORKSPACE_DIR, { withFileTypes: true })) {
+        if (skipDirs.has(e.name) || e.name.startsWith('.')) continue;
+        const full = path.join(WORKSPACE_DIR, e.name);
+        try {
+          const st = fs.lstatSync(full);
+          topLevelItems.push({
+            name: e.name,
+            path: e.name,
+            isDirectory: st.isDirectory(),
+            sizeBytes: st.isFile() ? st.size : 0,
+            updatedAt: st.mtime.toISOString()
+          });
+        } catch {}
+      }
+    } catch {}
+    topLevelItems.sort((a, b) => Number(b.isDirectory) - Number(a.isDirectory) || a.name.localeCompare(b.name));
+
+    const yamlPath = path.join(WORKSPACE_DIR, 'bionic.yaml');
+    const bionicYaml = fs.existsSync(yamlPath)
+      ? parseSimpleBionicYaml(fs.readFileSync(yamlPath, 'utf-8'))
+      : null;
+
+    let manifestEntries: Array<{ filepath: string; sizeBytes: number; sha256: string; uri?: string }> = [];
+    const manifestPath = path.join(WORKSPACE_DIR, 'data', 'manifest.json');
+    if (fs.existsSync(manifestPath)) {
+      try {
+        const doc = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+        if (Array.isArray(doc?.entries)) {
+          manifestEntries = doc.entries.map((item: any) => ({
+            filepath: String(item.filepath || ''),
+            sizeBytes: Number(item.sizeBytes || 0),
+            sha256: String(item.sha256 || ''),
+            uri: item.storage?.uri ? String(item.storage.uri) : undefined
+          }));
+        }
+      } catch {}
+    }
+
+    res.json({
+      workspaceDir: WORKSPACE_DIR,
+      rootFile: getProjectRootFile(),
+      totalBytes,
+      fileCount,
+      lastEditedAt: latestMtimeMs > 0 ? new Date(latestMtimeMs).toISOString() : null,
+      bionicYaml,
+      topLevelItems,
+      manifestEntries
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+apiRouter.post('/hub-local/project-meta', requireDaemonToken, (req, res) => {
+  try {
+    const body = (req.body || {}) as { title?: string; summary?: string };
+    const bionicYaml = updateBionicYamlFields(WORKSPACE_DIR, {
+      title: typeof body.title === 'string' ? body.title : undefined,
+      summary: typeof body.summary === 'string' ? body.summary : undefined
+    });
+    res.json({ success: true, bionicYaml });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Agent endpoints
 apiRouter.get('/agent/config', async (_req, res) => {
   const isOpenCodeInstalled = Boolean(getOpenCodeBinary());

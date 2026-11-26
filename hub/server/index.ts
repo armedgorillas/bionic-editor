@@ -1,11 +1,12 @@
 import fs from 'fs';
+import https from 'https';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import Fastify, { type FastifyInstance, type FastifyRequest, type FastifyReply } from 'fastify';
 import { ATTESTABLE_STATES, isValidPrefixedId, type ConfigKind } from '@bionic/shared';
 import { loadHubConfig, type HubConfig } from './config.js';
 import { createHubDatabase, type HubDatabase } from './db/pool.js';
-import { HubCertificateAuthority, type WorkloadJwtClaims } from './auth/ca.js';
+import { HubCertificateAuthority, extractSpiffeSanFromPeerCert, type WorkloadJwtClaims } from './auth/ca.js';
 import {
   SessionService,
   cookieNameForScope,
@@ -381,12 +382,67 @@ export async function createHubServer(overrides?: Partial<HubConfig>): Promise<H
     return { templates: res.rows };
   });
 
+  // Helper: mTLS call to Editor VM internal API (:3002) for landing-page metadata sync
+  async function callVmInternalMeta(
+    projectId: string,
+    internalIp: string,
+    method: 'GET' | 'POST',
+    body?: Record<string, any>
+  ): Promise<any | null> {
+    if (cfg.computeProvider === 'local') return null;
+    const creds = ca.getHubClientCredentials();
+    const expectedSan = `spiffe://bionic/project/${projectId}`;
+    return new Promise((resolve) => {
+      const payload = body ? JSON.stringify(body) : undefined;
+      const req = https.request(
+        {
+          host: internalIp,
+          port: 3002,
+          path: '/api/internal/project-meta',
+          method,
+          key: creds.keyPem,
+          cert: creds.certPem,
+          ca: creds.caCertPem,
+          rejectUnauthorized: true,
+          timeout: 3000,
+          checkServerIdentity: (_h, peerCert) => {
+            const san = extractSpiffeSanFromPeerCert(peerCert);
+            return san === expectedSan ? undefined : new Error(`SAN mismatch: ${san}`);
+          },
+          headers: payload
+            ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }
+            : undefined
+        },
+        (res) => {
+          const chunks: Buffer[] = [];
+          res.on('data', (c) => chunks.push(c));
+          res.on('end', () => {
+            if ((res.statusCode || 500) >= 400) return resolve(null);
+            try {
+              resolve(JSON.parse(Buffer.concat(chunks).toString('utf-8')));
+            } catch {
+              resolve(null);
+            }
+          });
+        }
+      );
+      req.on('timeout', () => {
+        req.destroy();
+        resolve(null);
+      });
+      req.on('error', () => resolve(null));
+      if (payload) req.write(payload);
+      req.end();
+    });
+  }
+
   app.get('/api/v1/projects', async (req, reply) => {
     const user = await requireHubUser(req, reply);
     if (!user) return;
     const res = await db.query(
       `SELECT p.id, p.slug, p.name, p.description, p.template_slug, p.status, p.idle_timeout_minutes,
-              p.last_activity_at, p.frozen_at, p.created_at, pm.role AS my_role
+              p.last_activity_at, p.last_edited_at, p.workspace_size_bytes, p.compute_disk_size_gb,
+              p.bionic_meta_json, p.frozen_at, p.created_at, p.updated_at, pm.role AS my_role
        FROM projects p
        JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = $1
        WHERE p.status <> 'deleted'
@@ -394,6 +450,172 @@ export async function createHubServer(overrides?: Partial<HubConfig>): Promise<H
       [user.id]
     );
     return { projects: res.rows };
+  });
+
+  // Project Landing Page detail endpoint (merges Postgres metadata + live VM bionic.yaml / disk stats)
+  app.get<{ Params: { id: string } }>('/api/v1/projects/:id', async (req, reply) => {
+    const user = await requireHubUser(req, reply);
+    if (!user) return;
+    if (!(await requireProjectRole(user, req.params.id, ['owner', 'editor', 'viewer'], reply))) return;
+
+    const projRes = await db.query(
+      `SELECT p.*, pm.role AS my_role, u.email AS owner_email, u.display_name AS owner_name,
+              t.display_name AS template_display_name
+       FROM projects p
+       LEFT JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = $2
+       LEFT JOIN users u ON u.id = p.owner_id
+       LEFT JOIN templates t ON t.slug = p.template_slug
+       WHERE p.id = $1 AND p.status <> 'deleted'`,
+      [req.params.id, user.id]
+    );
+    const proj = projRes.rows[0];
+    if (!proj) return reply.code(404).send({ error: 'Project not found' });
+
+    let liveMeta: any = null;
+    if (proj.status === 'running' && proj.compute_internal_ip) {
+      liveMeta = await callVmInternalMeta(proj.id, proj.compute_internal_ip, 'GET');
+      if (liveMeta) {
+        const metaToCache = {
+          bionicYaml: liveMeta.bionicYaml || null,
+          workspaceDir: liveMeta.workspaceDir || '/var/lib/bionic/workspace',
+          rootFile: liveMeta.rootFile || 'PLAN.md',
+          fileCount: Number(liveMeta.fileCount || 0),
+          topLevelItems: Array.isArray(liveMeta.topLevelItems) ? liveMeta.topLevelItems : [],
+          manifestEntries: Array.isArray(liveMeta.manifestEntries) ? liveMeta.manifestEntries : []
+        };
+        await db
+          .query(
+            `UPDATE projects
+             SET bionic_meta_json = $2::jsonb,
+                 workspace_size_bytes = $3,
+                 last_edited_at = COALESCE($4::timestamptz, last_edited_at)
+             WHERE id = $1`,
+            [proj.id, JSON.stringify(metaToCache), Number(liveMeta.totalBytes || 0), liveMeta.lastEditedAt || null]
+          )
+          .catch(() => {});
+        proj.bionic_meta_json = metaToCache;
+        proj.workspace_size_bytes = Number(liveMeta.totalBytes || 0);
+        if (liveMeta.lastEditedAt) proj.last_edited_at = liveMeta.lastEditedAt;
+      }
+    }
+
+    const [pubsRes, dataRes] = await Promise.all([
+      db.query(
+        `SELECT id, version, title, summary, git_commit_sha, static_site_url, visibility, published_at
+         FROM publications
+         WHERE project_id = $1 AND status = 'ready'
+         ORDER BY version DESC`,
+        [proj.id]
+      ),
+      db.query(
+        `SELECT d.id, d.display_name, d.storage_uri, d.size_bytes, d.sha256, d.created_at, g.permission
+         FROM project_data_grants g
+         JOIN data_objects d ON d.id = g.data_object_id
+         WHERE g.project_id = $1 AND d.status = 'ready'
+         ORDER BY d.created_at DESC`,
+        [proj.id]
+      )
+    ]);
+
+    const cachedMeta = (proj.bionic_meta_json || {}) as any;
+    const bionicYaml = cachedMeta.bionicYaml || null;
+    const trackedDataBytes = dataRes.rows.reduce((acc: number, r: any) => acc + Number(r.size_bytes || 0), 0);
+    const scheme = cfg.devMode ? 'http' : 'https';
+    const portSuffix = cfg.devMode && cfg.port !== 80 && cfg.port !== 443 ? `:${cfg.port}` : '';
+
+    return {
+      project: {
+        id: proj.id,
+        slug: proj.slug,
+        name: proj.name,
+        title: bionicYaml?.title || proj.name,
+        summary: bionicYaml?.summary || bionicYaml?.description || proj.description || '',
+        status: proj.status,
+        templateSlug: proj.template_slug,
+        templateDisplayName: proj.template_display_name || proj.template_slug,
+        idleTimeoutMinutes: proj.idle_timeout_minutes,
+        ownerEmail: proj.owner_email || '',
+        ownerName: proj.owner_name || '',
+        myRole: proj.my_role || (user.role === 'admin' ? 'admin' : 'viewer'),
+        parentPublicationId: proj.parent_publication_id || null,
+        forkedFromCommitSha: proj.forked_from_commit_sha || null
+      },
+      dates: {
+        createdAt: proj.created_at,
+        lastEditedAt: proj.last_edited_at || proj.updated_at,
+        lastActivityAt: proj.last_activity_at,
+        frozenAt: proj.frozen_at || null,
+        lastPublishedAt: pubsRes.rows[0]?.published_at || null
+      },
+      size: {
+        workspaceBytes: proj.workspace_size_bytes != null ? Number(proj.workspace_size_bytes) : null,
+        fileCount: typeof cachedMeta.fileCount === 'number' ? cachedMeta.fileCount : null,
+        trackedDataBytes,
+        diskSizeGb: proj.compute_disk_size_gb || 100
+      },
+      locations: {
+        workspaceDir: cachedMeta.workspaceDir || '/var/lib/bionic/workspace',
+        rootFile: cachedMeta.rootFile || 'PLAN.md',
+        editorUrl: `${scheme}://${proj.id}.editors.${cfg.domain}${portSuffix}/`,
+        liveReportUrl: `${scheme}://${proj.id}.reports.${cfg.domain}${portSuffix}/index.html`,
+        dataBucketUri: cfg.gcpProjectDataBucket
+          ? `gs://${cfg.gcpProjectDataBucket}/${proj.data_bucket_prefix}`
+          : proj.data_bucket_prefix,
+        gitRepoRef: proj.git_repo_ref,
+        computeZone: proj.compute_zone || cfg.gcpDefaultZone,
+        topLevelItems: Array.isArray(cachedMeta.topLevelItems) ? cachedMeta.topLevelItems : [],
+        manifestEntries: Array.isArray(cachedMeta.manifestEntries) ? cachedMeta.manifestEntries : []
+      },
+      datasets: dataRes.rows,
+      publications: pubsRes.rows,
+      bionicYaml,
+      liveSynced: Boolean(liveMeta)
+    };
+  });
+
+  app.patch<{ Params: { id: string } }>('/api/v1/projects/:id/meta', async (req, reply) => {
+    const user = await requireHubUser(req, reply);
+    if (!user) return;
+    if (!(await requireProjectRole(user, req.params.id, ['owner', 'editor'], reply))) return;
+
+    const body = (req.body || {}) as { title?: string; summary?: string };
+    const title = typeof body.title === 'string' ? body.title.trim().slice(0, 160) : undefined;
+    const summary = typeof body.summary === 'string' ? body.summary.trim().slice(0, 4000) : undefined;
+
+    const projRes = await db.query(
+      `SELECT id, status, compute_internal_ip, bionic_meta_json FROM projects WHERE id = $1 AND status <> 'deleted'`,
+      [req.params.id]
+    );
+    const proj = projRes.rows[0];
+    if (!proj) return reply.code(404).send({ error: 'Project not found' });
+
+    let syncedToVm = false;
+    let updatedBionicYaml: any = {
+      ...(proj.bionic_meta_json?.bionicYaml || {}),
+      ...(title !== undefined ? { title } : {}),
+      ...(summary !== undefined ? { summary } : {})
+    };
+
+    if (proj.status === 'running' && proj.compute_internal_ip) {
+      const vmRes = await callVmInternalMeta(proj.id, proj.compute_internal_ip, 'POST', { title, summary });
+      if (vmRes?.success) {
+        syncedToVm = true;
+        if (vmRes.bionicYaml) updatedBionicYaml = vmRes.bionicYaml;
+      }
+    }
+
+    const nextMeta = { ...(proj.bionic_meta_json || {}), bionicYaml: updatedBionicYaml };
+    await db.query(
+      `UPDATE projects
+       SET name = COALESCE($2, name),
+           description = COALESCE($3, description),
+           bionic_meta_json = $4::jsonb,
+           updated_at = NOW()
+       WHERE id = $1`,
+      [proj.id, title || null, summary !== undefined ? summary : null, JSON.stringify(nextMeta)]
+    );
+
+    return { success: true, syncedToVm, bionicYaml: updatedBionicYaml };
   });
 
   app.post('/api/v1/projects', async (req, reply) => {
@@ -769,11 +991,16 @@ export async function createHubServer(overrides?: Partial<HubConfig>): Promise<H
     reply.code(404).send({ error: 'Data object file missing' });
   });
 
-  // Central Git Smart HTTP Proxy (H3 + #3)
-  app.all<{ Params: { projectId: string; '*': string } }>('/api/internal/git/:projectId.git/*', async (req, reply) => {
+  // Central Git Smart HTTP Proxy (H3 + #3 — wildcard parsed explicitly to avoid `.git` param issues)
+  app.all<{ Params: { '*': string } }>('/api/internal/git/*', async (req, reply) => {
     const workload = await requireWorkloadJwt(req, reply);
     if (!workload) return;
-    await gitProxy.handleProxyRequest(req.params.projectId, req.params['*'] || '', workload, req, reply);
+    const rest = (req.params['*'] || '').replace(/^\/+/, '');
+    const m = rest.match(/^(prj-[a-z0-9-]+)\.git\/(.+)$/);
+    if (!m) {
+      return reply.code(400).send({ error: 'Invalid Git repository path' });
+    }
+    await gitProxy.handleProxyRequest(m[1], m[2], workload, req, reply);
     return reply;
   });
 
@@ -1078,6 +1305,9 @@ export async function createHubServer(overrides?: Partial<HubConfig>): Promise<H
   const clientDist = candidateClientDists.find((p) => fs.existsSync(path.join(p, 'index.html')));
   if (clientDist) {
     app.get('/', async (_req, reply) => {
+      return reply.type('text/html; charset=utf-8').send(fs.readFileSync(path.join(clientDist, 'index.html'), 'utf-8'));
+    });
+    app.get('/projects/:id', async (_req, reply) => {
       return reply.type('text/html; charset=utf-8').send(fs.readFileSync(path.join(clientDist, 'index.html'), 'utf-8'));
     });
     const serveFavicon = async (_req: FastifyRequest, reply: FastifyReply) => {

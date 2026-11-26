@@ -91,4 +91,4 @@ jobs:
         run: bash infra/packer/scripts/provision.sh
 
       - name: Run live VM self-test suite (systemd, mTLS, template, OpenCode V2, Hub shim)
-        run: node infra/packer/scripts/ci-vm-live-test.mjs
+        run: node infra/packer/scripts/ci-vm-live-verify.mjs

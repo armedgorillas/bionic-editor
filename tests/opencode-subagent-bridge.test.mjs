@@ -159,6 +159,29 @@ test('OpenCode V2 Subagent & Background Completion Bridge Suite', async (t) => {
     assert.equal(formatted[0].text, 'All checks passed.');
   });
 
+  await t.test('completes OpenCode V2 turn cleanly on session.execution.succeeded without waiting forever for session.idle', async () => {
+    const bridge = new OpenCodeServerBridge();
+    const broadcasts = [];
+    bridge.setBroadcast((payload) => broadcasts.push(payload));
+
+    const bionicSessionId = 'session_exec_succeeded';
+    const ocId = 'ses_exec_002';
+    bridge.registerSessionMapping(bionicSessionId, ocId);
+
+    bridge.handleOpenCodeEvent({ type: 'session.execution.started', data: { sessionID: ocId } });
+    bridge.handleOpenCodeEvent({
+      type: 'session.text.delta',
+      data: { sessionID: ocId, assistantMessageID: 'm1', delta: 'Done analyzing.' }
+    });
+    bridge.handleOpenCodeEvent({ type: 'session.execution.succeeded', data: { sessionID: ocId } });
+    // Duplicate trailing session.idle must be a harmless no-op
+    bridge.handleOpenCodeEvent({ type: 'session.idle', data: { sessionID: ocId } });
+
+    const finals = broadcasts.filter((b) => b.type === 'agent_event' && b.event.type === 'final');
+    assert.equal(finals.length, 1);
+    assert.equal(finals[0].event.delta, 'Done analyzing.');
+  });
+
   t.after(() => {
     fs.rmSync(tempDir, { recursive: true, force: true });
   });

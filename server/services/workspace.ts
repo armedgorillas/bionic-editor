@@ -1,6 +1,14 @@
 import fs from 'fs';
 import path from 'path';
-import { WORKSPACE_DIR } from '../config.js';
+import { execFileSync, spawn } from 'child_process';
+import {
+  WORKSPACE_DIR,
+  BIONIC_HUB_MODE,
+  BIONIC_SHIM_URL,
+  BIONIC_PROJECT_ID,
+  BIONIC_LOCAL_SHIM_TOKEN,
+  getTargetSpawnOptions
+} from '../config.js';
 import {
   isPathSafe,
   resolveSafePath,
@@ -117,15 +125,102 @@ export function classifyFileItem(name: string, relPath: string, isDirectory: boo
   return 'other';
 }
 
+function hydrateWorkspaceFromHubGitIfAvailable(): boolean {
+  if (!BIONIC_HUB_MODE || !BIONIC_SHIM_URL || !BIONIC_PROJECT_ID || !BIONIC_LOCAL_SHIM_TOKEN) {
+    return false;
+  }
+  const gitUrl = `${BIONIC_SHIM_URL}/git/${BIONIC_PROJECT_ID}.git`;
+  const authArg = `http.extraHeader=X-Bionic-Shim-Token: ${BIONIC_LOCAL_SHIM_TOKEN}`;
+  const spawnOpts = getTargetSpawnOptions();
+  try {
+    // Check whether the Hub project repository already has commits (e.g. forked from a Completed Module).
+    // Retry briefly on connection-refused while bionic-daemon finishes initial boot attestation.
+    let heads = '';
+    for (let attempt = 0; attempt < 10; attempt++) {
+      try {
+        heads = execFileSync('git', ['-c', authArg, 'ls-remote', '--heads', gitUrl], {
+          cwd: WORKSPACE_DIR,
+          encoding: 'utf-8',
+          timeout: 15_000,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          ...spawnOpts
+        }).trim();
+        break;
+      } catch (err: any) {
+        const msg = String(err?.stderr || err?.message || '');
+        if (/Connection refused|Failed to connect|Could not connect/i.test(msg) && attempt < 9) {
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1000);
+          continue;
+        }
+        throw err;
+      }
+    }
+    if (!heads) {
+      return false;
+    }
+    if (!fs.existsSync(path.join(WORKSPACE_DIR, '.git'))) {
+      execFileSync('git', ['init', '-b', 'main'], {
+        cwd: WORKSPACE_DIR,
+        timeout: 10_000,
+        stdio: 'pipe',
+        ...spawnOpts
+      });
+    }
+    execFileSync('git', ['-c', authArg, 'fetch', '--depth', '50', gitUrl, 'HEAD'], {
+      cwd: WORKSPACE_DIR,
+      timeout: 60_000,
+      stdio: 'pipe',
+      ...spawnOpts
+    });
+    execFileSync('git', ['reset', '--hard', 'FETCH_HEAD'], {
+      cwd: WORKSPACE_DIR,
+      timeout: 15_000,
+      stdio: 'pipe',
+      ...spawnOpts
+    });
+    // Ensure portable scripts are executable & kick off best-effort background data hydration if manifest exists
+    const scriptsDir = path.join(WORKSPACE_DIR, 'scripts');
+    if (fs.existsSync(scriptsDir)) {
+      for (const f of fs.readdirSync(scriptsDir)) {
+        if (f.endsWith('.sh')) {
+          try { fs.chmodSync(path.join(scriptsDir, f), 0o755); } catch {}
+        }
+      }
+      const dataPull = path.join(scriptsDir, 'data-pull.sh');
+      if (fs.existsSync(dataPull) && fs.existsSync(path.join(WORKSPACE_DIR, 'data', 'manifest.json'))) {
+        try {
+          const child = spawn('bash', [dataPull], {
+            cwd: WORKSPACE_DIR,
+            detached: true,
+            stdio: 'ignore',
+            ...spawnOpts
+          });
+          child.unref();
+        } catch {}
+      }
+    }
+    console.log(`📦 Hydrated forked workspace from Hub Git repository (${BIONIC_PROJECT_ID})`);
+    return true;
+  } catch (err: any) {
+    console.warn(`[workspace] Could not hydrate from Hub Git (${BIONIC_PROJECT_ID}): ${err.message || err}`);
+    return false;
+  }
+}
+
 export function ensureWorkspaceDir(): void {
   if (!fs.existsSync(WORKSPACE_DIR)) {
     ensureDirWithOwnership(WORKSPACE_DIR);
-    initDefaultTemplate();
+    if (!hydrateWorkspaceFromHubGitIfAvailable()) {
+      initDefaultTemplate();
+    }
   } else {
-    // If workspace exists but contains only filesystem/git metadata (e.g. ext4 `lost+found`, `.git`), scaffold default template
+    // If workspace exists but contains only filesystem/git metadata (e.g. ext4 `lost+found`, `.git`),
+    // first check Hub Git (for forked modules), otherwise scaffold default template.
     const entries = fs.readdirSync(WORKSPACE_DIR).filter((e) => e !== '.git' && e !== 'lost+found');
     if (entries.length === 0) {
-      initDefaultTemplate();
+      if (!hydrateWorkspaceFromHubGitIfAvailable()) {
+        initDefaultTemplate();
+      }
     }
   }
 }

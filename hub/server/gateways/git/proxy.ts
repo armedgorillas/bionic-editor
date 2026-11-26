@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { execFile } from 'child_process';
+import { execFile, spawn } from 'child_process';
 import { promisify } from 'util';
 import type { FastifyRequest, FastifyReply } from 'fastify';
 import type { HubConfig } from '../../config.js';
@@ -36,6 +36,15 @@ export class LocalBareGitProvider implements GitProvider {
         const src = this.repoPath(forkFrom.sourceProjectId);
         if (fs.existsSync(src)) {
           await execFileAsync('git', ['clone', '--bare', src, target]);
+          if (forkFrom.commitSha && /^[0-9a-f]{7,40}$/i.test(forkFrom.commitSha)) {
+            try {
+              await execFileAsync('git', ['--git-dir', target, 'cat-file', '-e', `${forkFrom.commitSha}^{commit}`]);
+              await execFileAsync('git', ['--git-dir', target, 'update-ref', 'refs/heads/main', forkFrom.commitSha]);
+              await execFileAsync('git', ['--git-dir', target, 'symbolic-ref', 'HEAD', 'refs/heads/main']);
+            } catch {
+              // Keep cloned default HEAD if commitSha not found
+            }
+          }
         } else {
           await execFileAsync('git', ['init', '--bare', target]);
         }
@@ -172,7 +181,7 @@ export class GitSmartHttpProxy {
     }
 
     if (this.cfg.gitProvider === 'local') {
-      reply.code(501).send({ error: 'Use local bare repo path in local dev mode, or configure HUB_GIT_PROVIDER=forgejo' });
+      await this.handleLocalSmartHttp(projectId, normalizedSub, req, reply);
       return;
     }
 
@@ -206,5 +215,68 @@ export class GitSmartHttpProxy {
       }
     }
     reply.raw.end();
+  }
+
+  private async handleLocalSmartHttp(
+    projectId: string,
+    normalizedSub: string,
+    req: FastifyRequest,
+    reply: FastifyReply
+  ): Promise<void> {
+    await this.provider.ensureProjectRepo(projectId);
+    const repoUrl = this.provider.getUpstreamRepoUrl(projectId);
+    const repoDir = repoUrl.startsWith('file://') ? repoUrl.slice('file://'.length) : repoUrl;
+
+    const pktLine = (line: string): Buffer => {
+      const len = Buffer.byteLength(line) + 4;
+      return Buffer.from(len.toString(16).padStart(4, '0') + line);
+    };
+
+    if (normalizedSub === 'info/refs') {
+      const parsed = new URL(req.url || '/', 'http://localhost');
+      const service = parsed.searchParams.get('service') || '';
+      if (service !== 'git-upload-pack' && service !== 'git-receive-pack') {
+        reply.code(403).send({ error: 'Unsupported Git service' });
+        return;
+      }
+      const gitSubCmd = service === 'git-upload-pack' ? 'upload-pack' : 'receive-pack';
+      const { stdout } = await execFileAsync('git', [gitSubCmd, '--stateless-rpc', '--advertise-refs', repoDir], {
+        encoding: 'buffer' as any,
+        maxBuffer: 10 * 1024 * 1024
+      });
+      const header = Buffer.concat([pktLine(`# service=${service}\n`), Buffer.from('0000')]);
+      reply
+        .code(200)
+        .header('Content-Type', `application/x-${service}-advertisement`)
+        .header('Cache-Control', 'no-cache')
+        .send(Buffer.concat([header, Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout)]));
+      return;
+    }
+
+    if (normalizedSub === 'git-upload-pack' || normalizedSub === 'git-receive-pack') {
+      const gitSubCmd = normalizedSub === 'git-upload-pack' ? 'upload-pack' : 'receive-pack';
+      const bodyBuf = Buffer.isBuffer(req.body) ? req.body : Buffer.from(String(req.body || ''));
+      reply.hijack();
+      reply.raw.writeHead(200, {
+        'Content-Type': `application/x-${normalizedSub}-result`,
+        'Cache-Control': 'no-cache'
+      });
+      await new Promise<void>((resolve) => {
+        const proc = spawn('git', [gitSubCmd, '--stateless-rpc', repoDir], { stdio: ['pipe', 'pipe', 'pipe'] });
+        proc.stdout.pipe(reply.raw);
+        proc.on('close', () => {
+          if (!reply.raw.writableEnded) reply.raw.end();
+          resolve();
+        });
+        proc.on('error', () => {
+          if (!reply.raw.writableEnded) reply.raw.end();
+          resolve();
+        });
+        proc.stdin.end(bodyBuf);
+      });
+      return;
+    }
+
+    reply.code(404).send({ error: 'Not found' });
   }
 }

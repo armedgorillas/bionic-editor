@@ -276,7 +276,9 @@ const HUB_SAFE_ENV_KEYS = new Set([
   'VIRTUAL_ENV',
   'PYTHONUNBUFFERED',
   'BIONIC_API_URL',
+  'BIONIC_SHIM_URL',
   'BIONIC_DATA_PROXY_URL',
+  'BIONIC_GIT_PROXY_URL',
   'BIONIC_HUB_PUBLISH_URL',
   'BIONIC_LOCAL_SHIM_TOKEN',
   'BIONIC_PROJECT_ID',
@@ -320,8 +322,12 @@ export function buildSafeChildEnv(extraEnv?: NodeJS.ProcessEnv): NodeJS.ProcessE
     env.HOME = target.home;
   }
   if (BIONIC_SHIM_URL) {
+    env.BIONIC_SHIM_URL = BIONIC_SHIM_URL;
     env.BIONIC_DATA_PROXY_URL = `${BIONIC_SHIM_URL}/data`;
     env.BIONIC_HUB_PUBLISH_URL = `${BIONIC_SHIM_URL}/publish`;
+    if (BIONIC_PROJECT_ID) {
+      env.BIONIC_GIT_PROXY_URL = `${BIONIC_SHIM_URL}/git/${BIONIC_PROJECT_ID}.git`;
+    }
   }
   if (BIONIC_LOCAL_SHIM_TOKEN) {
     env.BIONIC_LOCAL_SHIM_TOKEN = BIONIC_LOCAL_SHIM_TOKEN;

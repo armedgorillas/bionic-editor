@@ -729,6 +729,7 @@ export class OpenCodeServerBridge {
       if (!turn.accumulatedText) {
         turn.accumulatedText = `Error: ${errMsg}`;
       }
+      this.finishTurn(ocSessionId, turn);
       return;
     }
 
@@ -736,44 +737,56 @@ export class OpenCodeServerBridge {
       if (!turn.accumulatedText) {
         turn.accumulatedText = 'Execution was cancelled.';
       }
+      this.finishTurn(ocSessionId, turn);
       return;
     }
 
-    if (type === 'session.idle') {
-      this.activeTurns.delete(ocSessionId);
-      const tokens: TokenUsage = {
-        promptTokens: turn.promptTokens,
-        completionTokens: turn.completionTokens,
-        totalTokens: turn.promptTokens + turn.completionTokens,
-        estimatedCostUsd: turn.costUsd
-      };
+    if (
+      type === 'session.execution.succeeded' ||
+      type === 'session.idle' ||
+      (type === 'session.status' && (data.status === 'idle' || data.state === 'idle'))
+    ) {
+      this.finishTurn(ocSessionId, turn);
+      return;
+    }
+  }
 
-      if (turn.isBackground) {
-        if (turn.accumulatedThought.trim()) {
-          turn.timelineForPersist.unshift({
-            type: 'thought',
-            id: `thought_bg_${Date.now()}`,
-            content: turn.accumulatedThought.trim()
-          });
-        }
-        this.persistBackgroundTurn(turn, tokens);
-        if (this.broadcastFn) {
-          this.broadcastFn({
-            type: 'agent_event',
-            sessionId: turn.bionicSessionId,
-            event: {
-              type: 'final',
-              delta: turn.accumulatedText,
-              tokens
-            }
-          });
-        }
-      } else if (turn.resolve) {
-        turn.resolve({
-          text: turn.accumulatedText,
-          tokens
+  private finishTurn(ocSessionId: string, turn: ActiveTurnState): void {
+    if (!this.activeTurns.delete(ocSessionId)) {
+      return;
+    }
+    const tokens: TokenUsage = {
+      promptTokens: turn.promptTokens,
+      completionTokens: turn.completionTokens,
+      totalTokens: turn.promptTokens + turn.completionTokens,
+      estimatedCostUsd: turn.costUsd
+    };
+
+    if (turn.isBackground) {
+      if (turn.accumulatedThought.trim()) {
+        turn.timelineForPersist.unshift({
+          type: 'thought',
+          id: `thought_bg_${Date.now()}`,
+          content: turn.accumulatedThought.trim()
         });
       }
+      this.persistBackgroundTurn(turn, tokens);
+      if (this.broadcastFn) {
+        this.broadcastFn({
+          type: 'agent_event',
+          sessionId: turn.bionicSessionId,
+          event: {
+            type: 'final',
+            delta: turn.accumulatedText,
+            tokens
+          }
+        });
+      }
+    } else if (turn.resolve) {
+      turn.resolve({
+        text: turn.accumulatedText,
+        tokens
+      });
     }
   }
 
