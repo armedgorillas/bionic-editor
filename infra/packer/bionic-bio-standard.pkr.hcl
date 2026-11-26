@@ -26,6 +26,26 @@ variable "subnetwork" {
   default = "bionic-editors-subnet"
 }
 
+variable "omit_external_ip" {
+  type    = bool
+  default = true
+}
+
+variable "use_internal_ip" {
+  type    = bool
+  default = true
+}
+
+variable "use_iap" {
+  type    = bool
+  default = true
+}
+
+variable "builder_tags" {
+  type    = list(string)
+  default = ["packer-builder"]
+}
+
 variable "bionic_editor_tarball" {
   type    = string
   default = "../../bioniceditor.tgz"
@@ -38,7 +58,7 @@ variable "bionic_hub_tarball" {
 
 variable "opencode_version" {
   type    = string
-  default = "2.0.0"
+  default = "latest"
 }
 
 source "googlecompute" "bio_standard" {
@@ -47,13 +67,16 @@ source "googlecompute" "bio_standard" {
   zone                = var.zone
   network             = var.network
   subnetwork          = var.subnetwork
-  omit_external_ip    = false
   machine_type        = "e2-standard-2"
   disk_size           = 30
   ssh_username        = "packer"
+  omit_external_ip    = var.omit_external_ip
+  use_internal_ip     = var.use_internal_ip
+  use_iap             = var.use_iap
+  tags                = var.builder_tags
   image_family        = "bionic-bio-standard"
   image_name          = "bionic-bio-standard-{{timestamp}}"
-  image_description   = "Bionic Hub Golden VM Image (Ubuntu 24.04 + Two-Unit Systemd + nftables IMDS guard + Pinned OpenCode V2)"
+  image_description   = "Bionic Hub Golden VM Image (Ubuntu 24.04 + Two-Unit Systemd + nftables IMDS guard + OpenCode V2)"
 }
 
 build {
@@ -67,6 +90,11 @@ build {
   provisioner "file" {
     source      = var.bionic_hub_tarball
     destination = "/tmp/bionic-hub-daemon.tgz"
+  }
+
+  provisioner "file" {
+    source      = "scripts/verify-vm.sh"
+    destination = "/tmp/verify-vm.sh"
   }
 
   provisioner "shell" {
