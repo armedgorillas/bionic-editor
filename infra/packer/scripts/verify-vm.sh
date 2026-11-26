@@ -76,7 +76,7 @@ else
   fail "/usr/local/bin/opencode missing or not executable"
 fi
 
-OC_VER="$(sudo -u bionic-user /usr/local/bin/opencode --version 2>&1 || true)"
+OC_VER="$(sudo -H -u bionic-user env -u XDG_CONFIG_HOME -u XDG_DATA_HOME -u XDG_CACHE_HOME /usr/local/bin/opencode --version 2>&1 || true)"
 if [[ "$OC_VER" =~ 2\.[0-9]+ ]]; then
   pass "bionic-user can run OpenCode V2 (${OC_VER})"
 else
@@ -298,7 +298,7 @@ fi
 
 if [[ -f "${WS}/.opencode/opencode.jsonc" ]]; then
   pass ".opencode/opencode.jsonc synced in workspace"
-  OC_MODELS="$(cd "$WS" && sudo -u bionic-user env BIONIC_LOCAL_SHIM_TOKEN="${BIONIC_LOCAL_SHIM_TOKEN:-}" /usr/local/bin/opencode models 2>&1 | grep '^bionic-' || true)"
+  OC_MODELS="$(cd "$WS" && sudo -H -u bionic-user env -u XDG_CONFIG_HOME -u XDG_DATA_HOME -u XDG_CACHE_HOME BIONIC_LOCAL_SHIM_TOKEN="${BIONIC_LOCAL_SHIM_TOKEN:-}" /usr/local/bin/opencode models 2>&1 | grep '^bionic-' || true)"
   if [[ -n "$OC_MODELS" ]]; then
     pass "OpenCode V2 recognizes Hub-managed models: $(echo "$OC_MODELS" | tr '\n' ' ' | sed 's/ $//')"
   else
