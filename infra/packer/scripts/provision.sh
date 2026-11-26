@@ -233,4 +233,12 @@ WantedBy=multi-user.target
 EOF
 
 sudo systemctl enable bionic-vm-bootstrap.service bionic-mount-shared-data.service bionic-daemon.service bioniceditor.service
-echo "OK: Packer image provisioned."
+
+# Install & run Editor VM verification suite (fails Packer build if any binary/unit/permission is broken)
+if [[ -f /tmp/verify-vm.sh ]]; then
+  sudo install -m 0755 /tmp/verify-vm.sh /usr/local/bin/bionic-vm-selftest
+  rm -f /tmp/verify-vm.sh
+  sudo /usr/local/bin/bionic-vm-selftest --image-build
+fi
+
+echo "OK: Packer image provisioned and verified."

