@@ -13,7 +13,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import https from 'node:https';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -85,16 +85,23 @@ const hubPort = mockHub.address().port;
 const hubOrigin = `http://127.0.0.1:${hubPort}`;
 
 function run(cmd, args) {
-  execFileSync(cmd, args, { stdio: 'inherit' });
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, args, { stdio: 'inherit' });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`Command failed (${code}): ${cmd} ${args.join(' ')}`));
+    });
+  });
 }
 
 try {
   // 2. Simulate freshly formatted ext4 disk containing root-owned `lost+found`
-  run('sudo', ['rm', '-rf', '/var/lib/bionic/workspace']);
-  run('sudo', ['mkdir', '-p', '/var/lib/bionic/workspace/lost+found']);
-  run('sudo', ['chown', 'bionic-user:bionic-user', '/var/lib/bionic/workspace']);
-  run('sudo', ['chown', 'root:root', '/var/lib/bionic/workspace/lost+found']);
-  run('sudo', ['chmod', '0700', '/var/lib/bionic/workspace/lost+found']);
+  await run('sudo', ['rm', '-rf', '/var/lib/bionic/workspace']);
+  await run('sudo', ['mkdir', '-p', '/var/lib/bionic/workspace/lost+found']);
+  await run('sudo', ['chown', 'bionic-user:bionic-user', '/var/lib/bionic/workspace']);
+  await run('sudo', ['chown', 'root:root', '/var/lib/bionic/workspace/lost+found']);
+  await run('sudo', ['chmod', '0700', '/var/lib/bionic/workspace/lost+found']);
 
   // 3. Write env files matching bionic-vm-bootstrap
   const daemonEnv = [
@@ -117,11 +124,11 @@ try {
 
   fs.writeFileSync('/tmp/ci-daemon.env', daemonEnv);
   fs.writeFileSync('/tmp/ci-editor.env', editorEnv);
-  run('sudo', ['install', '-o', 'bionic-daemon', '-g', 'bionic-daemon', '-m', '0600', '/tmp/ci-daemon.env', '/etc/bionic-daemon.env']);
-  run('sudo', ['install', '-o', 'bionic-user', '-g', 'bionic-user', '-m', '0600', '/tmp/ci-editor.env', '/etc/bionic-editor.env']);
+  await run('sudo', ['install', '-o', 'bionic-daemon', '-g', 'bionic-daemon', '-m', '0600', '/tmp/ci-daemon.env', '/etc/bionic-daemon.env']);
+  await run('sudo', ['install', '-o', 'bionic-user', '-g', 'bionic-user', '-m', '0600', '/tmp/ci-editor.env', '/etc/bionic-editor.env']);
 
   // 4. Start real systemd units and wait for listeners
-  run('sudo', ['systemctl', 'restart', 'bionic-daemon.service', 'bioniceditor.service']);
+  await run('sudo', ['systemctl', 'restart', 'bionic-daemon.service', 'bioniceditor.service']);
 
   const deadline = Date.now() + 20_000;
   let ready = false;
@@ -136,12 +143,12 @@ try {
     await new Promise((r) => setTimeout(r, 500));
   }
   if (!ready) {
-    run('sudo', ['journalctl', '-u', 'bionic-daemon', '-u', 'bioniceditor', '-n', '60', '--no-pager']);
+    await run('sudo', ['journalctl', '-u', 'bionic-daemon', '-u', 'bioniceditor', '-n', '60', '--no-pager']);
     throw new Error('Timed out waiting for bioniceditor.service on 127.0.0.1:3003');
   }
 
-  // 5. Run the VM self-test suite in --ci-live mode
-  run('sudo', ['/usr/local/bin/bionic-vm-selftest', '--ci-live']);
+  // 5. Run the VM self-test suite in --ci-live mode (async so mockHub stays responsive on the event loop!)
+  await run('sudo', ['/usr/local/bin/bionic-vm-selftest', '--ci-live']);
 
   // 6. Verify end-to-end Hub mTLS proxy (:3000) -> bionic-daemon -> app.sock -> bioniceditor returns HTTP 200
   const creds = ca.getHubClientCredentials();
@@ -184,7 +191,7 @@ try {
   console.log('✔ PASS  End-to-end Hub mTLS (:3000) -> bionic-daemon -> app.sock -> bioniceditor returned HTTP 200 HTML');
 } finally {
   try {
-    run('sudo', ['systemctl', 'stop', 'bionic-daemon.service', 'bioniceditor.service']);
+    await run('sudo', ['systemctl', 'stop', 'bionic-daemon.service', 'bioniceditor.service']);
   } catch {}
   mockHub.close();
 }
