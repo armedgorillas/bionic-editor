@@ -52,7 +52,19 @@ interface ProjectRow {
   workspace_size_bytes?: number | null;
   compute_disk_size_gb?: number | null;
   bionic_meta_json?: any;
+  latest_publication_version?: number | null;
+  latest_publication_url?: string | null;
   my_role: string;
+}
+
+interface ModuleGroupRow {
+  project_id: string;
+  project_slug: string;
+  project_name: string;
+  project_status: string;
+  has_project_access: boolean;
+  latest: PublicationRow;
+  versions: PublicationRow[];
 }
 
 interface ProjectLandingData {
@@ -71,11 +83,13 @@ interface ProjectLandingData {
     myRole: string;
     parentPublicationId: string | null;
     forkedFromCommitSha: string | null;
+    latestGitCommitSha?: string | null;
   };
   dates: {
     createdAt: string;
     lastEditedAt: string | null;
     lastActivityAt: string | null;
+    lastSavedAt?: string | null;
     frozenAt: string | null;
     lastPublishedAt: string | null;
   };
@@ -96,7 +110,17 @@ interface ProjectLandingData {
     topLevelItems: Array<{ name: string; path: string; isDirectory: boolean; sizeBytes: number; updatedAt: string }>;
     manifestEntries: Array<{ filepath: string; sizeBytes: number; sha256: string; uri?: string }>;
   };
-  datasets: Array<{ id: string; display_name: string; storage_uri: string; size_bytes: number; sha256: string; permission: string }>;
+  datasets: Array<{
+    id: string;
+    filename?: string;
+    display_name: string;
+    description?: string;
+    rel_path?: string;
+    storage_uri: string;
+    size_bytes: number;
+    sha256: string;
+    permission: string;
+  }>;
   publications: Array<{
     id: string;
     version: number;
@@ -174,6 +198,7 @@ export const App: React.FC = () => {
   const [tab, setTab] = useState<TabId>('projects');
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(() => parseProjectIdFromPath());
   const [projectDetail, setProjectDetail] = useState<ProjectLandingData | null>(null);
+  const [detailError, setDetailError] = useState<string | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [editingMeta, setEditingMeta] = useState(false);
   const [editTitle, setEditTitle] = useState('');
@@ -181,7 +206,8 @@ export const App: React.FC = () => {
   const [savingMeta, setSavingMeta] = useState(false);
   const [projects, setProjects] = useState<ProjectRow[]>([]);
   const [availableTemplates, setAvailableTemplates] = useState<Array<{ slug: string; display_name: string }>>([]);
-  const [publications, setPublications] = useState<PublicationRow[]>([]);
+  const [modules, setModules] = useState<ModuleGroupRow[]>([]);
+  const [selectedModuleVersion, setSelectedModuleVersion] = useState<Record<string, string>>({});
   const [adminUsers, setAdminUsers] = useState<AdminUserRow[]>([]);
   const [adminData, setAdminData] = useState<{ templates: any[]; models: any[]; skills: any[]; mcp: any[] }>({
     templates: [],
@@ -229,7 +255,10 @@ export const App: React.FC = () => {
         fetch('/api/v1/templates')
       ]);
       if (pRes.ok) setProjects((await pRes.json()).projects || []);
-      if (pubRes.ok) setPublications((await pubRes.json()).publications || []);
+      if (pubRes.ok) {
+        const pubPayload = await pubRes.json();
+        setModules(pubPayload.modules || []);
+      }
       if (tmplRes.ok) {
         const list = (await tmplRes.json()).templates || [];
         setAvailableTemplates(list);
@@ -265,6 +294,7 @@ export const App: React.FC = () => {
 
   const loadProjectDetail = async (prjId: string) => {
     setDetailLoading(true);
+    setDetailError(null);
     try {
       const res = await fetch(`/api/v1/projects/${prjId}`);
       if (res.ok) {
@@ -273,8 +303,13 @@ export const App: React.FC = () => {
         setEditTitle(data.project.title || data.project.name);
         setEditSummary(data.project.summary || '');
       } else {
+        const errBody = await res.json().catch(() => ({}));
         setProjectDetail(null);
+        setDetailError(errBody.message || errBody.error || `Failed to load project (${res.status})`);
       }
+    } catch (err: any) {
+      setProjectDetail(null);
+      setDetailError(err.message || 'Network error loading project details');
     } finally {
       setDetailLoading(false);
     }
@@ -623,7 +658,7 @@ export const App: React.FC = () => {
               className={`px-3 py-1.5 rounded-md flex items-center space-x-1.5 ${tab === 'catalog' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white'}`}
             >
               <BookOpen className="w-4 h-4" />
-              <span>Completed Modules ({publications.length})</span>
+              <span>Completed Modules ({modules.length})</span>
             </button>
             {user.role === 'admin' && (
               <button
@@ -683,7 +718,7 @@ export const App: React.FC = () => {
               </div>
             ) : !projectDetail ? (
               <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-8 text-center text-sm text-rose-300">
-                Project not found or you do not have access.
+                {detailError || 'Project not found or you do not have access.'}
               </div>
             ) : (
               <>
@@ -882,6 +917,9 @@ export const App: React.FC = () => {
                       ['Manifest File', `${projectDetail.locations.workspaceDir}/bionic.yaml`],
                       ['Raw Data Object Storage', projectDetail.locations.dataBucketUri],
                       ['Git Repository', projectDetail.locations.gitRepoRef],
+                      ...(projectDetail.project.latestGitCommitSha
+                        ? [['Latest Saved Git Commit', projectDetail.project.latestGitCommitSha]]
+                        : []),
                       ['Editor Origin', projectDetail.locations.editorUrl],
                       ['Live Report Origin', projectDetail.locations.liveReportUrl]
                     ].map(([label, val]) => (
@@ -918,18 +956,21 @@ export const App: React.FC = () => {
 
                   {projectDetail.datasets.length > 0 && (
                     <div className="pt-2 space-y-2">
-                      <h3 className="text-xs font-medium text-slate-300">Registered Raw Datasets</h3>
+                      <h3 className="text-xs font-medium text-slate-300">Registered Raw Datasets &amp; Storage Pointers</h3>
                       <div className="space-y-1.5 text-xs">
                         {projectDetail.datasets.map((d) => (
                           <div
                             key={d.id}
-                            className="p-2.5 rounded bg-slate-950 border border-slate-800 flex flex-wrap items-center justify-between gap-2"
+                            className="p-2.5 rounded bg-slate-950 border border-slate-800 space-y-1"
                           >
-                            <div>
-                              <span className="font-medium text-slate-200">{d.display_name}</span>
-                              <span className="ml-2 text-slate-500 font-mono">{formatBytes(d.size_bytes)} · {d.permission}</span>
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div>
+                                <span className="font-mono font-medium text-slate-200">{d.rel_path || d.display_name}</span>
+                                <span className="ml-2 text-slate-500 font-mono">{formatBytes(d.size_bytes)} · {d.permission}</span>
+                              </div>
+                              {d.sha256 && <code className="text-slate-500 font-mono text-[10px]">sha256:{d.sha256.slice(0, 12)}</code>}
                             </div>
-                            <code className="text-slate-400 font-mono text-[11px] break-all">{d.storage_uri}</code>
+                            <code className="block text-sky-300/90 font-mono text-[11px] break-all">{d.storage_uri}</code>
                           </div>
                         ))}
                       </div>
@@ -1039,10 +1080,11 @@ export const App: React.FC = () => {
                       </button>
                       <span className="text-xs px-2 py-0.5 rounded-full bg-slate-800 text-sky-300 font-mono">{p.status}</span>
                     </div>
-                    <p className="text-xs text-slate-400 font-mono mt-1">
-                      {p.id} · {p.template_slug} · idle {p.idle_timeout_minutes}m
-                      {p.workspace_size_bytes != null ? ` · ${formatBytes(p.workspace_size_bytes)}` : ''}
-                    </p>
+                      <p className="text-xs text-slate-400 font-mono mt-1">
+                        {p.id} · {p.template_slug} · idle {p.idle_timeout_minutes}m
+                        {p.workspace_size_bytes != null ? ` · ${formatBytes(p.workspace_size_bytes)}` : ''}
+                        {p.latest_publication_version ? ` · published v${p.latest_publication_version}` : ''}
+                      </p>
                     {(p.bionic_meta_json?.bionicYaml?.summary || p.description) && (
                       <p className="text-xs text-slate-400 mt-2 line-clamp-2">
                         {p.bionic_meta_json?.bionicYaml?.summary || p.description}
@@ -1093,27 +1135,82 @@ export const App: React.FC = () => {
 
         {tab === 'catalog' && (
           <div className="grid gap-4 md:grid-cols-2">
-            {publications.map((pub) => (
-              <div key={pub.id} className="rounded-xl border border-slate-800 bg-slate-900/60 p-5 space-y-3">
-                <div className="flex items-center justify-between">
-                  <h2 className="font-semibold text-white">{pub.title} <span className="text-slate-400 text-xs">v{pub.version}</span></h2>
-                  <span className="text-xs px-2 py-0.5 rounded bg-slate-800 text-emerald-300">{pub.visibility}</span>
+            {modules.map((mod) => {
+              const selectedPubId = selectedModuleVersion[mod.project_id] || mod.latest.id;
+              const activePub = mod.versions.find((v) => v.id === selectedPubId) || mod.latest;
+              return (
+                <div key={mod.project_id} className="rounded-xl border border-slate-800 bg-slate-900/60 p-5 space-y-3">
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <h2 className="font-semibold text-white">
+                        {activePub.title}{' '}
+                        <span className="text-sky-300 text-xs font-mono">
+                          v{activePub.version}
+                          {activePub.id === mod.latest.id ? ' (latest)' : ''}
+                        </span>
+                      </h2>
+                      <p className="text-[11px] text-slate-500 font-mono mt-0.5">
+                        {mod.project_name} ({mod.project_id})
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {mod.versions.length > 1 && (
+                        <select
+                          value={activePub.id}
+                          onChange={(e) =>
+                            setSelectedModuleVersion((prev) => ({ ...prev, [mod.project_id]: e.target.value }))
+                          }
+                          aria-label="Select published version"
+                          className="text-xs rounded bg-slate-950 border border-slate-700 px-2 py-0.5 text-slate-200 font-mono"
+                        >
+                          {mod.versions.map((v) => (
+                            <option key={v.id} value={v.id}>
+                              v{v.version}
+                              {v.id === mod.latest.id ? ' (latest)' : ''}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                      <span className="text-xs px-2 py-0.5 rounded bg-slate-800 text-emerald-300">{activePub.visibility}</span>
+                    </div>
+                  </div>
+                  <p className="text-xs text-slate-400">
+                    {activePub.summary || 'Self-contained reproducible analysis module (published report + pinned Git code + manifest data).'}
+                  </p>
+                  <p className="text-xs font-mono text-slate-500">
+                    {activePub.id} · commit {activePub.git_commit_sha.slice(0, 10)} · {activePub.template_slug} · {formatDate(activePub.published_at)}
+                  </p>
+                  <div className="flex flex-wrap items-center gap-2 text-xs pt-1">
+                    <a
+                      href={activePub.static_site_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="px-3 py-1.5 rounded bg-sky-500/20 text-sky-300 hover:bg-sky-500/30 flex items-center space-x-1"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                      <span>View Report</span>
+                    </a>
+                    <button
+                      onClick={() => handleForkModule(activePub)}
+                      className="px-3 py-1.5 rounded bg-indigo-500/20 text-indigo-300 hover:bg-indigo-500/30 flex items-center space-x-1"
+                    >
+                      <GitFork className="w-3.5 h-3.5" />
+                      <span>Create Project from Module</span>
+                    </button>
+                    {mod.has_project_access && mod.project_status !== 'deleted' && (
+                      <button
+                        onClick={() => openProjectLanding(mod.project_id)}
+                        className="px-2.5 py-1.5 rounded border border-slate-700 text-slate-300 hover:bg-slate-800 flex items-center space-x-1"
+                      >
+                        <FileText className="w-3.5 h-3.5" />
+                        <span>Project Overview</span>
+                      </button>
+                    )}
+                  </div>
                 </div>
-                <p className="text-xs text-slate-400">{pub.summary || 'Self-contained reproducible analysis module (published report + pinned Git code + manifest data).'}</p>
-                <p className="text-xs font-mono text-slate-500">{pub.id} · commit {pub.git_commit_sha.slice(0, 10)} · {pub.template_slug}</p>
-                <div className="flex items-center gap-2 text-xs pt-1">
-                  <a href={pub.static_site_url} target="_blank" rel="noreferrer" className="px-3 py-1.5 rounded bg-sky-500/20 text-sky-300 hover:bg-sky-500/30 flex items-center space-x-1">
-                    <ExternalLink className="w-3.5 h-3.5" />
-                    <span>View Report</span>
-                  </a>
-                  <button onClick={() => handleForkModule(pub)} className="px-3 py-1.5 rounded bg-indigo-500/20 text-indigo-300 hover:bg-indigo-500/30 flex items-center space-x-1">
-                    <GitFork className="w-3.5 h-3.5" />
-                    <span>Create Project from Module</span>
-                  </button>
-                </div>
-              </div>
-            ))}
-            {publications.length === 0 && (
+              );
+            })}
+            {modules.length === 0 && (
               <p className="text-sm text-slate-500 col-span-2">No published analysis modules yet. Publish a project from Bionic Editor (`scripts/publish.sh`) to list it here.</p>
             )}
           </div>

@@ -160,7 +160,8 @@ export class HubWorkerEngine {
           'bionic-project-id': projectId
         },
         hubOrigin: this.cfg.hubOrigin,
-        projectId
+        projectId,
+        isFork: Boolean(proj.parent_publication_id || proj.parent_project_id)
       });
 
       const nextStatus = this.compute.kind === 'local' ? 'running' : 'starting';

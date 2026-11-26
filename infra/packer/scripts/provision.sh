@@ -90,6 +90,7 @@ meta() {
 HUB_ORIGIN="$(meta bionic-hub-origin)"
 PROJECT_ID="$(meta bionic-project-id)"
 SHARED_BUCKET="$(meta bionic-shared-data-bucket)"
+IS_FORK="$(meta bionic-is-fork)"
 REPORTS_ORIGIN=""
 if [[ -n "$HUB_ORIGIN" && -n "$PROJECT_ID" ]]; then
   DOMAIN="${HUB_ORIGIN#https://hub.}"
@@ -117,6 +118,7 @@ BIONIC_REPORTS_ORIGIN=${REPORTS_ORIGIN}
 BIONIC_LOCAL_SHIM_TOKEN=${SHIM_TOKEN}
 BIONIC_DAEMON_TOKEN=${DAEMON_TOKEN}
 BIONIC_SHIM_URL=http://127.0.0.1:3001
+BIONIC_IS_FORK=${IS_FORK:-false}
 ENVEOF
 chown bionic-user:bionic-user /etc/bionic-editor.env
 chmod 0600 /etc/bionic-editor.env

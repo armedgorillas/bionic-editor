@@ -3,6 +3,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import * as tar from 'tar';
+import yaml from 'js-yaml';
 import { GoogleAuth } from 'google-auth-library';
 import { createId } from '@bionic/shared';
 import type { HubConfig } from '../config.js';
@@ -209,14 +210,55 @@ export class PublishService {
       extractedRootToClean = path.dirname(extractDir);
 
       let manifestSnapshot = input.manifestSnapshot || {};
-      let bionicYaml = input.bionicYaml || {};
+      let bionicYaml: Record<string, any> = input.bionicYaml || {};
       let testResults = input.testResults || [];
+      let workspaceStats: Record<string, any> | null = null;
+      let effectiveTitle = input.title;
+      let effectiveSummary = input.summary;
+      let effectiveVisibility = input.visibility;
+      let effectiveGitCommitSha = input.gitCommitSha;
+
       const metaDir = path.join(extractDir, '_bionic_meta');
       if (fs.existsSync(metaDir)) {
         const mPath = path.join(metaDir, 'manifest.json');
         if (fs.existsSync(mPath) && !input.manifestSnapshot) {
           try {
             manifestSnapshot = JSON.parse(fs.readFileSync(mPath, 'utf-8'));
+          } catch {}
+        }
+        const byPath = path.join(metaDir, 'bionic.yaml');
+        if (fs.existsSync(byPath) && !input.bionicYaml) {
+          try {
+            const rawYaml = fs.readFileSync(byPath, 'utf-8');
+            const parsedYaml = yaml.load(rawYaml, { schema: yaml.JSON_SCHEMA });
+            if (parsedYaml && typeof parsedYaml === 'object' && !Array.isArray(parsedYaml)) {
+              bionicYaml = { ...(parsedYaml as Record<string, any>), raw: rawYaml };
+            }
+          } catch {}
+        }
+        const pmPath = path.join(metaDir, 'publish_meta.json');
+        if (fs.existsSync(pmPath)) {
+          try {
+            const pm = JSON.parse(fs.readFileSync(pmPath, 'utf-8'));
+            if (typeof pm?.title === 'string' && pm.title.trim()) {
+              effectiveTitle = pm.title.replace(/[\r\n\0]/g, ' ').trim().slice(0, 140);
+            }
+            if (typeof pm?.summary === 'string' && pm.summary.trim()) {
+              effectiveSummary = pm.summary.replace(/\0/g, '').trim().slice(0, 4000);
+            }
+            if (pm?.visibility === 'private' || pm?.visibility === 'org' || pm?.visibility === 'public') {
+              effectiveVisibility = pm.visibility;
+            }
+            if (typeof pm?.gitCommitSha === 'string' && /^[0-9a-f]{7,40}$/i.test(pm.gitCommitSha.trim())) {
+              effectiveGitCommitSha = pm.gitCommitSha.trim();
+            }
+          } catch {}
+        }
+        const wsStatsPath = path.join(metaDir, 'workspace_stats.json');
+        if (fs.existsSync(wsStatsPath)) {
+          try {
+            const parsed = JSON.parse(fs.readFileSync(wsStatsPath, 'utf-8'));
+            if (parsed && typeof parsed === 'object') workspaceStats = parsed;
           } catch {}
         }
         const tDir = path.join(metaDir, 'test_results');
@@ -236,16 +278,30 @@ export class PublishService {
         fs.rmSync(metaDir, { recursive: true, force: true });
       }
 
+      // Fall back to bionic.yaml summary/title when caller didn't supply one (skipping starter boilerplate)
+      const isBoilerplateSummary = (s: string) =>
+        s.trim().startsWith('Summarize the research question, data sources, analytical workflow');
+      if (!effectiveSummary && typeof bionicYaml?.summary === 'string' && !isBoilerplateSummary(bionicYaml.summary)) {
+        effectiveSummary = bionicYaml.summary.trim().slice(0, 4000);
+      }
+
       // 3. Independently validate all manifest dataset grants (Security C4)
       const manifestEntries = manifestSnapshot?.entries || [];
       const pinnedData = await this.storage.assertManifestEntriesAuthorized(input.projectId, manifestEntries);
 
-      // Verify git commit if configured
-      if (input.gitCommitSha && input.gitCommitSha !== 'uncommitted' && this.cfg.gitProvider !== 'local') {
-        const exists = await this.git.verifyCommitExists(input.projectId, input.gitCommitSha);
-        if (!exists) {
-          throw Object.assign(new Error(`Git commit ${input.gitCommitSha} not found in project repo`), { statusCode: 400 });
-        }
+      // Verify git commit exists in Hub's Git repository (required so "Create Project from Module" always forks full code!)
+      if (!effectiveGitCommitSha || effectiveGitCommitSha === 'uncommitted' || !/^[0-9a-f]{7,40}$/i.test(effectiveGitCommitSha)) {
+        throw Object.assign(
+          new Error('Publish requires a committed and pushed Git snapshot (got uncommitted). Ensure scripts/publish.sh pushes to Hub Git.'),
+          { statusCode: 400 }
+        );
+      }
+      const commitExists = await this.git.verifyCommitExists(input.projectId, effectiveGitCommitSha);
+      if (!commitExists) {
+        throw Object.assign(
+          new Error(`Git commit ${effectiveGitCommitSha} not found in Hub project repository. Re-run git push or scripts/publish.sh.`),
+          { statusCode: 400 }
+        );
       }
 
       // 4. Compute next publication version & upload to strictly separated public vs private bucket (Security C3)
@@ -254,7 +310,7 @@ export class PublishService {
         [input.projectId]
       );
       const version = (verRes.rows[0]?.max_ver || 0) + 1;
-      const bucketKind: 'public' | 'private' = input.visibility === 'public' ? 'public' : 'private';
+      const bucketKind: 'public' | 'private' = effectiveVisibility === 'public' ? 'public' : 'private';
       const prefix = bucketKind === 'public' ? `reports/${proj.slug}/v${version}` : `publications/${pubId}`;
 
       const artifactUri = await this.uploadStaticTree(bucketKind, prefix, extractDir, {
@@ -262,7 +318,7 @@ export class PublishService {
         projectId: input.projectId,
         projectSlug: proj.slug,
         version,
-        gitCommitSha: input.gitCommitSha,
+        gitCommitSha: effectiveGitCommitSha,
         publishedAt: new Date().toISOString()
       });
 
@@ -273,7 +329,7 @@ export class PublishService {
           ? `${this.cfg.publicReportsOrigin}/reports/${proj.slug}/v${version}/index.html`
           : `${scheme}://${pubId}.reports.${this.cfg.domain}${portSuffix}/index.html`;
 
-      // 5. Commit immutable publication + normalized publication_data_objects
+      // 5. Commit immutable publication + normalized publication_data_objects + sync project landing metadata
       await this.db.withTransaction(async (client) => {
         await client.query(
           `INSERT INTO publications (
@@ -288,9 +344,9 @@ export class PublishService {
             pubId,
             input.projectId,
             version,
-            input.title,
-            input.summary,
-            input.gitCommitSha,
+            effectiveTitle,
+            effectiveSummary,
+            effectiveGitCommitSha,
             `pub/v${version}`,
             proj.template_slug,
             proj.template_revision_id,
@@ -300,7 +356,7 @@ export class PublishService {
             JSON.stringify(manifestSnapshot),
             JSON.stringify(bionicYaml),
             JSON.stringify(testResults),
-            input.visibility,
+            effectiveVisibility,
             input.publishedByUserId
           ]
         );
@@ -313,10 +369,54 @@ export class PublishService {
             [pubId, item.dataObjectId, item.gcsGeneration, item.relPath, item.sha256]
           );
         }
+
+        // Keep Project Overview metadata in sync with the newly published snapshot & manifest pointers
+        const curProj = await client.query<{ bionic_meta_json: any; description: string }>(
+          `SELECT bionic_meta_json, description FROM projects WHERE id = $1`,
+          [input.projectId]
+        );
+        const existingMeta = (curProj.rows[0]?.bionic_meta_json || {}) as Record<string, any>;
+        const nextMeta: Record<string, any> = {
+          ...existingMeta,
+          ...(Object.keys(bionicYaml).length > 0 ? { bionicYaml } : {}),
+          ...(workspaceStats?.workspaceDir ? { workspaceDir: workspaceStats.workspaceDir } : {}),
+          ...(workspaceStats?.rootFile ? { rootFile: workspaceStats.rootFile } : {}),
+          ...(typeof workspaceStats?.fileCount === 'number' ? { fileCount: workspaceStats.fileCount } : {}),
+          ...(Array.isArray(workspaceStats?.topLevelItems) ? { topLevelItems: workspaceStats.topLevelItems } : {}),
+          manifestEntries: manifestEntries.map((e: any) => ({
+            filepath: String(e.filepath || ''),
+            sizeBytes: Number(e.sizeBytes || 0),
+            sha256: String(e.sha256 || ''),
+            uri: e.storage?.uri ? String(e.storage.uri) : undefined
+          })),
+          latestGitCommitSha: effectiveGitCommitSha,
+          lastSavedAt: new Date().toISOString()
+        };
+        const nextDescription =
+          effectiveSummary && !isBoilerplateSummary(effectiveSummary)
+            ? effectiveSummary
+            : curProj.rows[0]?.description || '';
+
+        await client.query(
+          `UPDATE projects
+           SET description = $2,
+               bionic_meta_json = $3::jsonb,
+               workspace_size_bytes = COALESCE($4, workspace_size_bytes),
+               last_edited_at = COALESCE($5::timestamptz, NOW()),
+               updated_at = NOW()
+           WHERE id = $1`,
+          [
+            input.projectId,
+            nextDescription,
+            JSON.stringify(nextMeta),
+            typeof workspaceStats?.totalBytes === 'number' ? workspaceStats.totalBytes : null,
+            workspaceStats?.lastEditedAt || null
+          ]
+        );
       });
 
       this.latestCache.delete(proj.slug);
-      return { publicationId: pubId, version, staticSiteUrl, visibility: input.visibility };
+      return { publicationId: pubId, version, staticSiteUrl, visibility: effectiveVisibility };
     } finally {
       if (extractedRootToClean) {
         fs.rmSync(extractedRootToClean, { recursive: true, force: true });

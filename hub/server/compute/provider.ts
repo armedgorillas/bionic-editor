@@ -19,6 +19,7 @@ export interface CreateInstanceInput {
   hubOrigin: string;
   projectId: string;
   runId?: string;
+  isFork?: boolean;
 }
 
 export interface ComputeInstanceInfo {
@@ -173,6 +174,7 @@ export class GcpComputeProvider implements ComputeProvider {
             ? [{ key: 'bionic-shared-data-bucket', value: this.cfg.gcpSharedDataBucket }]
             : []),
           ...(input.runId ? [{ key: 'bionic-run-id', value: input.runId }] : []),
+          ...(input.isFork ? [{ key: 'bionic-is-fork', value: 'true' }] : []),
           { key: 'block-project-ssh-keys', value: 'true' }
         ]
       },

@@ -26,12 +26,44 @@ export function getBionicConfig(): BionicRuntimeConfig {
   return { baseUrl: '', baseSpec: 'SPEC.md', rootFile: 'SPEC.md' };
 }
 
+export async function fetchWorkspaceMeta(): Promise<{
+  workspaceDir: string;
+  rootFile: string;
+  totalBytes: number;
+  fileCount: number;
+  lastEditedAt: string | null;
+  bionicYaml: { title?: string; summary?: string; description?: string; name?: string } | null;
+}> {
+  const res = await fetch(`${API_BASE}/workspace/meta`);
+  if (!res.ok) throw new Error('Failed to load workspace metadata');
+  return res.json();
+}
+
+export async function saveProjectSnapshot(payload?: {
+  title?: string;
+  summary?: string;
+  message?: string;
+}): Promise<{ success: boolean; gitCommitSha?: string; hubSynced?: boolean; error?: string }> {
+  const res = await fetch(`${API_BASE}/hub/save`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {})
+  });
+  return res.json();
+}
+
 export async function publishProjectReport(payload: {
   visibility: 'private' | 'org' | 'public';
   title: string;
   summary?: string;
   dryRun?: boolean;
-}): Promise<{ success: boolean; stdout?: string; stderr?: string; error?: string }> {
+}): Promise<{
+  success: boolean;
+  publication?: { publicationId: string; version: number; staticSiteUrl: string; visibility: string };
+  stdout?: string;
+  stderr?: string;
+  error?: string;
+}> {
   const res = await fetch(`${API_BASE}/hub/publish`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

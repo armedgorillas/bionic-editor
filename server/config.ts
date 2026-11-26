@@ -251,6 +251,7 @@ export function resolveTargetUser(workspaceDir: string, explicitUser?: string): 
 export const TARGET_USER = resolveTargetUser(WORKSPACE_DIR, SERVICE_USER);
 
 export const BIONIC_HUB_MODE = process.env.BIONIC_HUB_MODE === 'true' || process.env.BIONIC_HUB_MODE === '1';
+export const BIONIC_IS_FORK = process.env.BIONIC_IS_FORK === 'true' || process.env.BIONIC_IS_FORK === '1';
 export const BIONIC_SANDBOX_MODE = process.env.BIONIC_SANDBOX_MODE === 'true' || process.env.BIONIC_SANDBOX_MODE === '1';
 export const BIONIC_HUB_URL = (process.env.BIONIC_HUB_URL || '').replace(/\/+$/, '');
 export const BIONIC_PROJECT_ID = process.env.BIONIC_PROJECT_ID || '';

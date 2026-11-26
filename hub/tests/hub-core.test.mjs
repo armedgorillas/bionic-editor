@@ -24,7 +24,7 @@ import { assertIpAllowed, assertSafeOutboundUrl } from '../dist/server/gateways/
 import { parseSubdomainHost } from '../dist/server/proxy/editorProxy.js';
 import { loadHubConfig } from '../dist/server/config.js';
 import { PublishService } from '../dist/server/publish/service.js';
-import { LocalBareGitProvider } from '../dist/server/gateways/git/proxy.js';
+import { LocalBareGitProvider, LocalDirGitBundleStore, GitSmartHttpProxy } from '../dist/server/gateways/git/proxy.js';
 import { detectResumeJump } from '../dist/daemon/index.js';
 import { hashPassword, verifyPassword, LocalAuthService } from '../dist/server/auth/localAuth.js';
 
@@ -439,5 +439,158 @@ summary: "Differential expression across 48 renal biopsies."
     assert.ok(provText.includes('/usr/local/bin/opencode'));
     assert.ok(provText.includes('bionic-vm-selftest --image-build'));
     assert.ok(provText.includes('BASE_SPEC=PLAN.md'));
+    assert.ok(provText.includes('BIONIC_IS_FORK'));
+  });
+
+  await t.test('End-to-end Git Smart HTTP push -> durable bundle restore after Hub restart -> fork -> hydrate workspace', async () => {
+    const http = await import('node:http');
+    const { execFile } = await import('node:child_process');
+    const { promisify } = await import('node:util');
+    const execFileAsync = promisify(execFile);
+    const Fastify = (await import('fastify')).default;
+    const { BionicVmDaemon } = await import('../dist/daemon/index.js');
+
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'bionic-fork-e2e-'));
+    const reposDir = path.join(tmpRoot, 'repos');
+    const bundlesDir = path.join(tmpRoot, 'bundles');
+    const bundleStore = new LocalDirGitBundleStore(bundlesDir);
+    const gitProvider = new LocalBareGitProvider(reposDir, bundleStore);
+    const cfg = loadHubConfig({ HUB_DEV_MODE: 'true', HUB_GIT_PROVIDER: 'local', HUB_GIT_LOCAL_DIR: reposDir });
+    const gitProxy = new GitSmartHttpProxy(cfg, gitProvider);
+    const ca = await HubCertificateAuthority.create({ issuer: 'https://hub.bionic.example.com' });
+
+    const prjA = createId('prj');
+    const prjB = createId('prj');
+
+    const app = Fastify({ logger: false, bodyLimit: 30 * 1024 * 1024 });
+    app.addContentTypeParser(
+      ['application/x-git-upload-pack-request', 'application/x-git-receive-pack-request', 'application/octet-stream'],
+      { parseAs: 'buffer' },
+      (_req, body, done) => done(null, body)
+    );
+    app.post('/api/internal/vm/attest', async (req) => {
+      const b = req.body;
+      const pid = b.devProjectId;
+      const issued = await ca.signVmCsr({ csrPem: b.csrPem, projectId: pid, instanceId: 'vm-1', ttlHours: 72 });
+      const workloadJwt = await ca.mintWorkloadJwt({ projectId: pid, vmInstanceId: 'vm-1', kind: 'editor' }, 900);
+      return { certPem: issued.certPem, caCertPem: issued.caCertPem, workloadJwt };
+    });
+    app.all('/api/internal/git/*', async (req, reply) => {
+      const auth = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+      const workload = await ca.verifyWorkloadJwt(auth);
+      const rest = String(req.params['*'] || '').replace(/^\/+/, '');
+      const m = rest.match(/^(prj-[a-z0-9-]+)\.git\/(.+)$/);
+      assert.ok(m, `unexpected git path: ${rest}`);
+      await gitProxy.handleProxyRequest(m[1], m[2], workload, req, reply);
+      return reply;
+    });
+
+    await app.listen({ host: '127.0.0.1', port: 0 });
+    const hubPort = app.server.address().port;
+
+    const getFreePort = async () => {
+      const s = http.createServer();
+      await new Promise((r) => s.listen(0, '127.0.0.1', r));
+      const p = s.address().port;
+      await new Promise((r) => s.close(r));
+      return p;
+    };
+
+    let daemonA;
+    let daemonB;
+    try {
+      // 1. Start daemon for source project prjA and push real project files via shim -> Hub Git Smart HTTP
+      const shimA = await getFreePort();
+      daemonA = new BionicVmDaemon({
+        hubOrigin: `http://127.0.0.1:${hubPort}`,
+        projectId: prjA,
+        workspaceDir: path.join(tmpRoot, 'wsA'),
+        editorSocketPath: path.join(tmpRoot, 'noA.sock'),
+        editorLoopbackPort: 39991,
+        mtlsEditorPort: await getFreePort(),
+        mtlsInternalPort: await getFreePort(),
+        shimPort: shimA,
+        shimToken: 'tok-a',
+        daemonToken: 'dtok-a',
+        runtimeDir: path.join(tmpRoot, 'runA'),
+        workspaceUser: 'nobody'
+      });
+      await daemonA.start();
+
+      const wsA = path.join(tmpRoot, 'wsA');
+      fs.mkdirSync(path.join(wsA, 'code'), { recursive: true });
+      fs.mkdirSync(path.join(wsA, 'web-report'), { recursive: true });
+      fs.writeFileSync(path.join(wsA, 'PLAN.md'), '# Kidney Cohort Analysis\nCustom module plan.\n');
+      fs.writeFileSync(path.join(wsA, 'code', 'analyze.py'), 'print("kidney-module-ok")\n');
+      fs.writeFileSync(path.join(wsA, 'web-report', 'index.html'), '<h1>Kidney Module</h1>');
+
+      execFileSync('git', ['init', '-b', 'main'], { cwd: wsA, stdio: 'pipe' });
+      execFileSync('git', ['config', 'user.name', 'Test'], { cwd: wsA });
+      execFileSync('git', ['config', 'user.email', 'test@bionic.local'], { cwd: wsA });
+      execFileSync('git', ['add', '-A'], { cwd: wsA });
+      execFileSync('git', ['commit', '-m', 'publish: Kidney Module'], { cwd: wsA, stdio: 'pipe' });
+      const headSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: wsA, encoding: 'utf-8' }).trim();
+
+      await execFileAsync(
+        'git',
+        ['-c', 'http.extraHeader=X-Bionic-Shim-Token: tok-a', 'push', `http://127.0.0.1:${shimA}/git/${prjA}.git`, 'HEAD:refs/heads/main'],
+        { cwd: wsA }
+      );
+
+      // 2. Wipe local bare repos dir (simulate Hub container restart!) and verify commit still resolves from durable bundle
+      fs.rmSync(reposDir, { recursive: true, force: true });
+      assert.equal(await gitProvider.verifyCommitExists(prjA, headSha), true);
+
+      // 3. Fork into prjB pinned to headSha, then wipe local bare repos dir AGAIN to prove forked bundle was persisted
+      await gitProvider.ensureProjectRepo(prjB, { sourceProjectId: prjA, commitSha: headSha });
+      fs.rmSync(reposDir, { recursive: true, force: true });
+
+      // 4. Start daemon for forked project prjB and hydrate fresh workspace containing lost+found
+      const shimB = await getFreePort();
+      const wsB = path.join(tmpRoot, 'wsB');
+      fs.mkdirSync(path.join(wsB, 'lost+found'), { recursive: true });
+      daemonB = new BionicVmDaemon({
+        hubOrigin: `http://127.0.0.1:${hubPort}`,
+        projectId: prjB,
+        workspaceDir: wsB,
+        editorSocketPath: path.join(tmpRoot, 'noB.sock'),
+        editorLoopbackPort: 39992,
+        mtlsEditorPort: await getFreePort(),
+        mtlsInternalPort: await getFreePort(),
+        shimPort: shimB,
+        shimToken: 'tok-b',
+        daemonToken: 'dtok-b',
+        runtimeDir: path.join(tmpRoot, 'runB'),
+        workspaceUser: 'nobody'
+      });
+      await daemonB.start();
+
+      const gitUrlB = `http://127.0.0.1:${shimB}/git/${prjB}.git`;
+      const { stdout: headsOut } = await execFileAsync(
+        'git',
+        ['-c', 'http.extraHeader=X-Bionic-Shim-Token: tok-b', 'ls-remote', '--heads', gitUrlB],
+        { cwd: wsB }
+      );
+      const heads = headsOut.trim();
+      assert.ok(heads.includes('refs/heads/main'), `expected refs/heads/main in forked repo, got: ${heads}`);
+
+      execFileSync('git', ['init', '-b', 'main'], { cwd: wsB, stdio: 'pipe' });
+      await execFileAsync(
+        'git',
+        ['-c', 'http.extraHeader=X-Bionic-Shim-Token: tok-b', 'fetch', gitUrlB, 'refs/heads/main'],
+        { cwd: wsB }
+      );
+      execFileSync('git', ['reset', '--hard', 'FETCH_HEAD'], { cwd: wsB, stdio: 'pipe' });
+
+      assert.equal(fs.readFileSync(path.join(wsB, 'PLAN.md'), 'utf-8'), '# Kidney Cohort Analysis\nCustom module plan.\n');
+      assert.equal(fs.readFileSync(path.join(wsB, 'code', 'analyze.py'), 'utf-8'), 'print("kidney-module-ok")\n');
+      assert.equal(fs.readFileSync(path.join(wsB, 'web-report', 'index.html'), 'utf-8'), '<h1>Kidney Module</h1>');
+      assert.ok(fs.existsSync(path.join(wsB, 'lost+found')), 'lost+found preserved safely');
+    } finally {
+      daemonA?.stop();
+      daemonB?.stop();
+      await app.close();
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
   });
 });

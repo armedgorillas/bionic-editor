@@ -122,8 +122,8 @@ export class BionicVmDaemon {
   async start(): Promise<void> {
     fs.mkdirSync(this.cfg.runtimeDir, { recursive: true, mode: 0o700 });
     await this.attestWithHub();
-    this.startShimServer();
-    this.startMtlsServers();
+    await this.startShimServer();
+    await this.startMtlsServers();
     this.startSuspendResumeWatcher();
     // Periodic 24h cert renewal so continuously running VMs never hit 72h cert expiry (#17)
     this.certRenewTimer = setInterval(() => {
@@ -168,7 +168,10 @@ export class BionicVmDaemon {
     let identityJwt: string | undefined;
     try {
       const metaUrl = `http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/identity?audience=${encodeURIComponent(`${this.cfg.hubOrigin}/attest`)}&format=full`;
-      const metaRes = await fetch(metaUrl, { headers: { 'Metadata-Flavor': 'Google' } });
+      const metaRes = await fetch(metaUrl, {
+        headers: { 'Metadata-Flavor': 'Google' },
+        signal: AbortSignal.timeout(2000)
+      });
       if (metaRes.ok) identityJwt = await metaRes.text();
     } catch {
       // Non-GCP dev fallback
@@ -224,7 +227,7 @@ export class BionicVmDaemon {
     return san.includes('URI:spiffe://bionic/hub');
   }
 
-  private startShimServer(): void {
+  private async startShimServer(): Promise<void> {
     this.shimServer = http.createServer(async (req, res) => {
       const parsedUrl = new URL(req.url || '/', 'http://127.0.0.1');
       // Security #7: Support Anthropic (x-api-key), Google (x-goog-api-key / ?key=), OpenAI (Authorization), & custom header
@@ -252,6 +255,7 @@ export class BionicVmDaemon {
       else if (cleanUrlPath.startsWith('/data/')) hubTargetPath = `/api/internal${cleanUrlPath}`;
       else if (cleanUrlPath === '/models') hubTargetPath = '/api/internal/models';
       else if (cleanUrlPath === '/publish') hubTargetPath = `/api/internal/projects/${this.cfg.projectId}/publish-intake`;
+      else if (cleanUrlPath === '/sync-meta') hubTargetPath = `/api/internal/projects/${this.cfg.projectId}/sync-meta`;
       else {
         res.writeHead(404);
         res.end('Not found');
@@ -273,9 +277,14 @@ export class BionicVmDaemon {
       }
       const bodyBuf = Buffer.concat(chunks);
 
-      const isTransfer = cleanUrlPath.startsWith('/data/') || cleanUrlPath === '/publish';
+      const isTransfer =
+        cleanUrlPath.startsWith('/data/') ||
+        cleanUrlPath.startsWith('/git/') ||
+        cleanUrlPath === '/publish' ||
+        cleanUrlPath === '/sync-meta';
       if (isTransfer) this.activeDataTransfers++;
       try {
+        const toLatin1Header = (v: string) => v.replace(/[^\x20-\x7E]/g, ' ').trim();
         const doForward = async () => {
           const headers: Record<string, string> = {
             Authorization: `Bearer ${this.workloadJwt}`
@@ -293,12 +302,19 @@ export class BionicVmDaemon {
             'x-bionic-title',
             'x-bionic-summary'
           ]) {
-            if (req.headers[passthrough]) headers[passthrough] = String(req.headers[passthrough]);
+            if (req.headers[passthrough]) {
+              const rawVal = String(req.headers[passthrough]);
+              headers[passthrough] =
+                passthrough === 'x-bionic-title' || passthrough === 'x-bionic-summary'
+                  ? toLatin1Header(rawVal)
+                  : rawVal;
+            }
           }
           return fetch(`${this.cfg.hubOrigin}${hubTargetPath}`, {
             method: req.method,
             headers,
-            body: req.method === 'GET' || req.method === 'HEAD' ? undefined : bodyBuf
+            body: req.method === 'GET' || req.method === 'HEAD' ? undefined : bodyBuf,
+            redirect: 'manual'
           });
         };
 
@@ -308,9 +324,12 @@ export class BionicVmDaemon {
           upstream = await doForward();
         }
 
+        // Strip hop-by-hop and content-encoding/content-length headers because undici fetch()
+        // automatically decompresses gzip/br bodies while keeping original headers on upstream.headers.
+        const stripHeaders = new Set(['transfer-encoding', 'content-encoding', 'content-length', 'connection', 'keep-alive']);
         const respHeaders: Record<string, string> = {};
         upstream.headers.forEach((v, k) => {
-          if (k.toLowerCase() !== 'transfer-encoding') respHeaders[k] = v;
+          if (!stripHeaders.has(k.toLowerCase())) respHeaders[k] = v;
         });
         res.writeHead(upstream.status, respHeaders);
         if (upstream.body) {
@@ -327,10 +346,10 @@ export class BionicVmDaemon {
       }
     });
 
-    this.shimServer.listen(this.cfg.shimPort, '127.0.0.1');
+    await new Promise<void>((resolve) => this.shimServer!.listen(this.cfg.shimPort, '127.0.0.1', resolve));
   }
 
-  private startMtlsServers(): void {
+  private async startMtlsServers(): Promise<void> {
     const tlsOpts: https.ServerOptions = {
       key: this.keyPem,
       cert: this.certPem,
@@ -351,7 +370,12 @@ export class BionicVmDaemon {
       const verifiedUser = String(req.headers['x-bionic-user-id'] || '');
       const urlPath = req.url || '/';
 
-      if (scope === 'editor' && verifiedUser && req.method === 'POST' && (urlPath.includes('/api/agent/chat') || urlPath.includes('/api/hub/publish'))) {
+      if (
+        scope === 'editor' &&
+        verifiedUser &&
+        req.method === 'POST' &&
+        (urlPath.includes('/api/agent/chat') || urlPath.includes('/api/hub/publish') || urlPath.includes('/api/hub/save'))
+      ) {
         this.activeUserId = verifiedUser;
         this.activeUserUpdatedAt = Date.now();
       }
@@ -424,7 +448,7 @@ export class BionicVmDaemon {
       upReq.end();
     });
 
-    this.editorMtlsServer.listen(this.cfg.mtlsEditorPort, '0.0.0.0');
+    await new Promise<void>((resolve) => this.editorMtlsServer!.listen(this.cfg.mtlsEditorPort, '0.0.0.0', resolve));
 
     // 2. VPC :3002 — Internal Control Plane endpoints (/api/internal/*)
     this.internalMtlsServer = https.createServer(tlsOpts, async (req, res) => {
@@ -501,7 +525,7 @@ export class BionicVmDaemon {
         res.end(JSON.stringify({ error: err.message }));
       }
     });
-    this.internalMtlsServer.listen(this.cfg.mtlsInternalPort, '0.0.0.0');
+    await new Promise<void>((resolve) => this.internalMtlsServer!.listen(this.cfg.mtlsInternalPort, '0.0.0.0', resolve));
   }
 
   private serveSafeLiveReportFile(urlPath: string, res: http.ServerResponse): void {

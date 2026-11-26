@@ -26,7 +26,12 @@ export class DataStorageService {
     scopes: ['https://www.googleapis.com/auth/devstorage.read_write']
   });
 
+  private readonly streamSigningKey: Buffer;
+
   constructor(private readonly db: HubDatabase, private readonly cfg: HubConfig) {
+    this.streamSigningKey = cfg.jwtPrivateKeyPem
+      ? crypto.createHash('sha256').update(`bionic-stream-v1:${cfg.jwtPrivateKeyPem}`).digest()
+      : crypto.randomBytes(32);
     if (!cfg.gcpProjectDataBucket) {
       fs.mkdirSync(path.join(cfg.localStorageDir, 'blobs'), { recursive: true });
     }
@@ -51,6 +56,7 @@ export class DataStorageService {
     contentType?: string;
     targetRelPath: string;
     description?: string;
+    internalMode?: boolean;
   }): Promise<UploadSessionResult> {
     const cleanName = path.basename(input.filename).replace(/[\0/\\]/g, '').trim();
     if (!cleanName || cleanName === '.' || cleanName === '..') {
@@ -108,7 +114,9 @@ export class DataStorageService {
       [dataObjectId, input.projectId, storageUri, input.sizeBytes, cleanName, input.contentType || null, input.description || '', input.userId]
     );
 
-    const resumableSessionUri = `${this.cfg.hubOrigin}/api/v1/projects/${input.projectId}/data/local-upload/${dataObjectId}`;
+    const resumableSessionUri = input.internalMode
+      ? `${this.cfg.hubOrigin}/api/internal/data/local-upload/${input.projectId}/${dataObjectId}?token=${encodeURIComponent(this.signStreamToken(input.projectId, dataObjectId, 1800))}`
+      : `${this.cfg.hubOrigin}/api/v1/projects/${input.projectId}/data/local-upload/${dataObjectId}`;
     return { dataObjectId, storageUri, resumableSessionUri, provider: 'local' };
   }
 
@@ -209,8 +217,6 @@ export class DataStorageService {
    * Authorizes strictly against Postgres `project_data_grants` (or `scope = 'shared'`)
    * and returns a short-lived per-file download URL pinned to `gcs_generation`.
    */
-  private readonly streamSigningKey = crypto.randomBytes(32);
-
   signStreamToken(projectId: string, dataObjectId: string, ttlSeconds = 900): string {
     const exp = Math.floor(Date.now() / 1000) + ttlSeconds;
     const payload = `${projectId}:${dataObjectId}:${exp}`;

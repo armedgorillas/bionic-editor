@@ -23,6 +23,7 @@ import { LlmGatewayService } from './gateways/llm/gateway.js';
 import { McpGatewayService } from './gateways/mcp/gateway.js';
 import {
   LocalBareGitProvider,
+  GcsGitBundleStore,
   ForgejoGitProvider,
   GitSmartHttpProxy,
   type GitProvider
@@ -68,8 +69,11 @@ export async function createHubServer(overrides?: Partial<HubConfig>): Promise<H
   const localAuth = new LocalAuthService(db, cfg);
   const adminConfig = new AdminConfigService(db, cfg);
   const compute: ComputeProvider = cfg.computeProvider === 'gcp' ? new GcpComputeProvider(cfg) : new LocalComputeProvider();
+  const gitBundleStore = cfg.gcpProjectDataBucket ? new GcsGitBundleStore(cfg.gcpProjectDataBucket) : undefined;
   const gitProvider: GitProvider =
-    cfg.gitProvider === 'forgejo' ? new ForgejoGitProvider(cfg) : new LocalBareGitProvider(cfg.gitLocalReposDir);
+    cfg.gitProvider === 'forgejo'
+      ? new ForgejoGitProvider(cfg)
+      : new LocalBareGitProvider(cfg.gitLocalReposDir, gitBundleStore);
   const gitProxy = new GitSmartHttpProxy(cfg, gitProvider);
   const storageService = new DataStorageService(db, cfg);
   const publishService = new PublishService(db, cfg, storageService, gitProvider);
@@ -442,14 +446,27 @@ export async function createHubServer(overrides?: Partial<HubConfig>): Promise<H
     const res = await db.query(
       `SELECT p.id, p.slug, p.name, p.description, p.template_slug, p.status, p.idle_timeout_minutes,
               p.last_activity_at, p.last_edited_at, p.workspace_size_bytes, p.compute_disk_size_gb,
-              p.bionic_meta_json, p.frozen_at, p.created_at, p.updated_at, pm.role AS my_role
+              p.bionic_meta_json, p.frozen_at, p.created_at, p.updated_at, pm.role AS my_role,
+              lp.version AS latest_publication_version, lp.static_site_url AS latest_publication_url
        FROM projects p
        JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = $1
+       LEFT JOIN LATERAL (
+         SELECT version, static_site_url
+         FROM publications
+         WHERE project_id = p.id AND status = 'ready'
+         ORDER BY version DESC
+         LIMIT 1
+       ) lp ON TRUE
        WHERE p.status <> 'deleted'
        ORDER BY p.updated_at DESC`,
       [user.id]
     );
-    return { projects: res.rows };
+    return {
+      projects: res.rows.map((r: any) => ({
+        ...r,
+        workspace_size_bytes: r.workspace_size_bytes != null ? Number(r.workspace_size_bytes) : null
+      }))
+    };
   });
 
   // Project Landing Page detail endpoint (merges Postgres metadata + live VM bionic.yaml / disk stats)
@@ -508,9 +525,18 @@ export async function createHubServer(overrides?: Partial<HubConfig>): Promise<H
         [proj.id]
       ),
       db.query(
-        `SELECT d.id, d.display_name, d.storage_uri, d.size_bytes, d.sha256, d.created_at, g.permission
+        `SELECT d.id, d.filename, d.description, d.storage_uri, d.size_bytes, d.sha256, d.created_at,
+                g.permission, lpdo.rel_path AS pub_rel_path
          FROM project_data_grants g
          JOIN data_objects d ON d.id = g.data_object_id
+         LEFT JOIN LATERAL (
+           SELECT pdo.rel_path
+           FROM publication_data_objects pdo
+           JOIN publications pub ON pub.id = pdo.publication_id
+           WHERE pub.project_id = $1 AND pdo.data_object_id = d.id
+           ORDER BY pub.version DESC
+           LIMIT 1
+         ) lpdo ON TRUE
          WHERE g.project_id = $1 AND d.status = 'ready'
          ORDER BY d.created_at DESC`,
         [proj.id]
@@ -519,7 +545,29 @@ export async function createHubServer(overrides?: Partial<HubConfig>): Promise<H
 
     const cachedMeta = (proj.bionic_meta_json || {}) as any;
     const bionicYaml = cachedMeta.bionicYaml || null;
-    const trackedDataBytes = dataRes.rows.reduce((acc: number, r: any) => acc + Number(r.size_bytes || 0), 0);
+    const manifestEntries = Array.isArray(cachedMeta.manifestEntries) ? cachedMeta.manifestEntries : [];
+    const manifestByUri = new Map<string, any>();
+    for (const me of manifestEntries) {
+      if (me?.uri) manifestByUri.set(String(me.uri), me);
+    }
+
+    const datasets = dataRes.rows.map((d: any) => {
+      const matched = manifestByUri.get(String(d.storage_uri || ''));
+      return {
+        id: d.id,
+        filename: d.filename,
+        display_name: d.filename,
+        description: d.description || '',
+        rel_path: matched?.filepath || d.pub_rel_path || `data/raw/${d.filename}`,
+        storage_uri: d.storage_uri,
+        size_bytes: Number(d.size_bytes || 0),
+        sha256: d.sha256 || '',
+        permission: d.permission,
+        created_at: d.created_at
+      };
+    });
+
+    const trackedDataBytes = datasets.reduce((acc: number, r: any) => acc + Number(r.size_bytes || 0), 0);
     const scheme = cfg.devMode ? 'http' : 'https';
     const portSuffix = cfg.devMode && cfg.port !== 80 && cfg.port !== 443 ? `:${cfg.port}` : '';
 
@@ -538,12 +586,14 @@ export async function createHubServer(overrides?: Partial<HubConfig>): Promise<H
         ownerName: proj.owner_name || '',
         myRole: proj.my_role || (user.role === 'admin' ? 'admin' : 'viewer'),
         parentPublicationId: proj.parent_publication_id || null,
-        forkedFromCommitSha: proj.forked_from_commit_sha || null
+        forkedFromCommitSha: proj.forked_from_commit_sha || null,
+        latestGitCommitSha: cachedMeta.latestGitCommitSha || pubsRes.rows[0]?.git_commit_sha || null
       },
       dates: {
         createdAt: proj.created_at,
         lastEditedAt: proj.last_edited_at || proj.updated_at,
         lastActivityAt: proj.last_activity_at,
+        lastSavedAt: cachedMeta.lastSavedAt || null,
         frozenAt: proj.frozen_at || null,
         lastPublishedAt: pubsRes.rows[0]?.published_at || null
       },
@@ -564,9 +614,9 @@ export async function createHubServer(overrides?: Partial<HubConfig>): Promise<H
         gitRepoRef: proj.git_repo_ref,
         computeZone: proj.compute_zone || cfg.gcpDefaultZone,
         topLevelItems: Array.isArray(cachedMeta.topLevelItems) ? cachedMeta.topLevelItems : [],
-        manifestEntries: Array.isArray(cachedMeta.manifestEntries) ? cachedMeta.manifestEntries : []
+        manifestEntries
       },
-      datasets: dataRes.rows,
+      datasets,
       publications: pubsRes.rows,
       bionicYaml,
       liveSynced: Boolean(liveMeta)
@@ -670,23 +720,49 @@ export async function createHubServer(overrides?: Partial<HubConfig>): Promise<H
     return orchestrator.requestTransition(req.params.id, 'delete');
   });
 
-  // --- Publications Catalog & Headless Reproducible Module Runs ---
+  // --- Publications Catalog (grouped by project/module with version history + flat backward-compat list) ---
   app.get('/api/v1/publications', async (req, reply) => {
     const user = await requireHubUser(req, reply);
     if (!user) return;
     const res = await db.query(
       `SELECT pub.id, pub.project_id, pub.version, pub.title, pub.summary, pub.git_commit_sha,
               pub.template_slug, pub.static_site_url, pub.visibility, pub.test_results_json,
-              pub.published_at, p.slug AS project_slug
+              pub.published_at, p.slug AS project_slug, p.name AS project_name, p.status AS project_status,
+              (pm.user_id IS NOT NULL OR $2 = 'admin') AS has_project_access
        FROM publications pub
        JOIN projects p ON p.id = pub.project_id
        LEFT JOIN project_members pm ON pm.project_id = pub.project_id AND pm.user_id = $1
        WHERE pub.status = 'ready'
          AND (pub.visibility IN ('public', 'org') OR pm.user_id IS NOT NULL OR $2 = 'admin')
-       ORDER BY pub.published_at DESC`,
+       ORDER BY pub.project_id ASC, pub.version DESC`,
       [user.id, user.role]
     );
-    return { publications: res.rows };
+
+    const grouped = new Map<string, any>();
+    for (const row of res.rows) {
+      let mod = grouped.get(row.project_id);
+      if (!mod) {
+        mod = {
+          project_id: row.project_id,
+          project_slug: row.project_slug,
+          project_name: row.project_name,
+          project_status: row.project_status,
+          has_project_access: Boolean(row.has_project_access),
+          latest: row,
+          versions: []
+        };
+        grouped.set(row.project_id, mod);
+      }
+      mod.versions.push(row);
+    }
+
+    const modules = Array.from(grouped.values()).sort(
+      (a, b) => new Date(b.latest.published_at).getTime() - new Date(a.latest.published_at).getTime()
+    );
+    const publications = [...res.rows].sort(
+      (a, b) => new Date(b.published_at).getTime() - new Date(a.published_at).getTime()
+    );
+    return { modules, publications };
   });
 
   app.post<{ Params: { pubId: string } }>('/api/v1/publications/:pubId/downgrade', async (req, reply) => {
@@ -925,21 +1001,95 @@ export async function createHubServer(overrides?: Partial<HubConfig>): Promise<H
     return reply.code(201).send(result);
   });
 
+  // Internal VM Save Snapshot metadata sync (updates Project Overview DB immediately on Save without requiring Publish)
+  app.post<{ Params: { id: string } }>('/api/internal/projects/:id/sync-meta', async (req, reply) => {
+    const workload = await requireWorkloadJwt(req, reply);
+    if (!workload || workload.projectId !== req.params.id) {
+      if (workload) reply.code(403).send({ error: 'Workload JWT project mismatch' });
+      return;
+    }
+    const body = (req.body || {}) as Record<string, any>;
+    const projRes = await db.query<{ bionic_meta_json: any; description: string }>(
+      `SELECT bionic_meta_json, description FROM projects WHERE id = $1 AND status <> 'deleted'`,
+      [workload.projectId]
+    );
+    const proj = projRes.rows[0];
+    if (!proj) return reply.code(404).send({ error: 'Project not found' });
+
+    const existing = (proj.bionic_meta_json || {}) as Record<string, any>;
+    const bionicYaml = body.bionicYaml && typeof body.bionicYaml === 'object' ? body.bionicYaml : existing.bionicYaml;
+    const gitCommitSha =
+      typeof body.gitCommitSha === 'string' && /^[0-9a-f]{7,40}$/i.test(body.gitCommitSha.trim())
+        ? body.gitCommitSha.trim()
+        : existing.latestGitCommitSha || null;
+
+    const nextMeta = {
+      ...existing,
+      ...(bionicYaml ? { bionicYaml } : {}),
+      ...(body.workspaceDir ? { workspaceDir: String(body.workspaceDir) } : {}),
+      ...(body.rootFile ? { rootFile: String(body.rootFile) } : {}),
+      ...(typeof body.fileCount === 'number' ? { fileCount: body.fileCount } : {}),
+      ...(Array.isArray(body.topLevelItems) ? { topLevelItems: body.topLevelItems } : {}),
+      ...(Array.isArray(body.manifestEntries) ? { manifestEntries: body.manifestEntries } : {}),
+      ...(gitCommitSha ? { latestGitCommitSha: gitCommitSha } : {}),
+      lastSavedAt: new Date().toISOString()
+    };
+
+    const rawSummary = typeof bionicYaml?.summary === 'string' ? bionicYaml.summary.trim() : '';
+    const isBoilerplate = rawSummary.startsWith('Summarize the research question, data sources, analytical workflow');
+    const nextDescription = rawSummary && !isBoilerplate ? rawSummary.slice(0, 4000) : proj.description;
+
+    await db.query(
+      `UPDATE projects
+       SET description = $2,
+           bionic_meta_json = $3::jsonb,
+           workspace_size_bytes = COALESCE($4, workspace_size_bytes),
+           last_edited_at = COALESCE($5::timestamptz, NOW()),
+           last_activity_at = NOW(),
+           updated_at = NOW()
+       WHERE id = $1`,
+      [
+        workload.projectId,
+        nextDescription,
+        JSON.stringify(nextMeta),
+        typeof body.totalBytes === 'number' ? body.totalBytes : null,
+        typeof body.lastEditedAt === 'string' ? body.lastEditedAt : null
+      ]
+    );
+
+    return { success: true, latestGitCommitSha: gitCommitSha };
+  });
+
   // VM Data Push/Pull/Stream Endpoints (#5 & Reviewer 2 #12)
   app.post('/api/internal/data/upload-session', async (req, reply) => {
     const workload = await requireWorkloadJwt(req, reply);
     if (!workload) return;
     const body = (req.body || {}) as any;
     const pRes = await db.query<{ owner_id: string }>(`SELECT owner_id FROM projects WHERE id = $1`, [workload.projectId]);
+    if (!pRes.rows[0]) return reply.code(404).send({ error: 'Project not found' });
     const filename = String(body.filename || '');
     return storageService.initiateUploadSession({
       projectId: workload.projectId,
-      userId: pRes.rows[0]?.owner_id || '',
+      userId: pRes.rows[0].owner_id,
       filename,
       sizeBytes: Number(body.sizeBytes || 0),
-      targetRelPath: sanitizeRawTargetRel(String(body.targetRelPath || ''), filename)
+      targetRelPath: sanitizeRawTargetRel(String(body.targetRelPath || ''), filename),
+      internalMode: true
     });
   });
+
+  app.put<{ Params: { projectId: string; dataObjectId: string } }>(
+    '/api/internal/data/local-upload/:projectId/:dataObjectId',
+    async (req, reply) => {
+      const tok = String((req.query as any)?.token || '');
+      if (!storageService.verifyStreamToken(req.params.projectId, req.params.dataObjectId, tok)) {
+        return reply.code(401).send({ error: 'Invalid or expired upload token' });
+      }
+      const buf = Buffer.isBuffer(req.body) ? req.body : Buffer.from(String(req.body || ''));
+      await storageService.writeLocalUploadedBytes(req.params.projectId, req.params.dataObjectId, buf);
+      return { success: true, bytes: buf.length };
+    }
+  );
 
   app.post('/api/internal/data/upload-complete', async (req, reply) => {
     const workload = await requireWorkloadJwt(req, reply);

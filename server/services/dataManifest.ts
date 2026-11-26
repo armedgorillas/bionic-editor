@@ -560,6 +560,113 @@ export async function registerDataFile(input: {
   });
 }
 
+/**
+ * Scans `data/raw/` for untracked or modified regular files (skipping symlinks & dotfiles),
+ * registers/updates them in `data/manifest.json` while strictly preserving existing `storage`
+ * GCS pointers for unmodified files, and synchronously updates `DATA_MANIFEST.md` and
+ * `web-report/data/data_manifest.json`.
+ */
+export async function syncRawDataDirectoryToManifest(): Promise<{
+  added: number;
+  updated: number;
+  totalEntries: number;
+}> {
+  return withWriteLock(async () => {
+    const manifest = readManifest();
+    const rawRoot = path.join(WORKSPACE_DIR, 'data', 'raw');
+    let added = 0;
+    let updated = 0;
+
+    if (fs.existsSync(rawRoot)) {
+      const regularFiles: Array<{ relPath: string; fullPath: string; size: number; mtimeMs: number }> = [];
+      const walk = (dir: string) => {
+        for (const dirent of fs.readdirSync(dir, { withFileTypes: true })) {
+          if (dirent.name.startsWith('.') || dirent.name === '.gitkeep') continue;
+          const full = path.join(dir, dirent.name);
+          let st: fs.Stats;
+          try {
+            st = fs.lstatSync(full);
+          } catch {
+            continue;
+          }
+          if (st.isSymbolicLink()) continue;
+          if (st.isDirectory()) {
+            walk(full);
+          } else if (st.isFile()) {
+            const rel = normalizeWorkspaceRelPath(path.relative(WORKSPACE_DIR, full));
+            if (rel) regularFiles.push({ relPath: rel, fullPath: full, size: st.size, mtimeMs: st.mtimeMs });
+          }
+        }
+      };
+      walk(rawRoot);
+
+      for (const f of regularFiles) {
+        const idx = manifest.entries.findIndex((e) => normalizeWorkspaceRelPath(e.filepath) === f.relPath);
+        if (idx >= 0) {
+          const existing = manifest.entries[idx];
+          if (
+            existing.sha256 &&
+            existing.sizeBytes === f.size &&
+            existing.mtimeMs !== undefined &&
+            Math.abs(existing.mtimeMs - f.mtimeMs) < 2
+          ) {
+            continue;
+          }
+          const actualSha = await computeFileSha256(f.fullPath);
+          if (actualSha === existing.sha256 && existing.sizeBytes === f.size) {
+            existing.mtimeMs = f.mtimeMs;
+            continue;
+          }
+          manifest.entries[idx] = {
+            ...existing,
+            sha256: actualSha,
+            sizeBytes: f.size,
+            mtimeMs: f.mtimeMs,
+            acquiredAt: new Date().toISOString(),
+            storage: existing.storage ? { ...existing.storage, syncStatus: 'pending' } : undefined
+          };
+          updated++;
+        } else {
+          const sha256 = await computeFileSha256(f.fullPath);
+          let entryId = makeEntryId(f.relPath);
+          if (manifest.entries.some((e) => e.id === entryId)) {
+            entryId = `${entryId}_${sha256.slice(0, 6)}`;
+          }
+          manifest.entries.push({
+            id: entryId,
+            filepath: f.relPath,
+            sha256,
+            sizeBytes: f.size,
+            mtimeMs: f.mtimeMs,
+            acquiredAt: new Date().toISOString(),
+            acquisition: { method: 'manual' },
+            description: '',
+            excludeFromGit: true,
+            excludeFromPublication: true
+          });
+          added++;
+        }
+      }
+    }
+
+    ensureDataGitignore();
+    writeManifestSync(manifest);
+    return { added, updated, totalEntries: manifest.entries.length };
+  });
+}
+
+/**
+ * Re-reads `data/manifest.json` (e.g. after `scripts/data-push.sh` writes GCS storage pointers)
+ * and synchronously refreshes `data/DATA_MANIFEST.md` + `web-report/data/data_manifest.json`.
+ */
+export async function refreshDerivedManifestMirrors(): Promise<DataManifestDocument> {
+  return withWriteLock(async () => {
+    const manifest = readManifest();
+    writeManifestSync(manifest);
+    return manifest;
+  });
+}
+
 export async function removeManifestEntry(id: string): Promise<boolean> {
   return withWriteLock(async () => {
     const manifest = readManifest();

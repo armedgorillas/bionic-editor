@@ -201,6 +201,7 @@ PY
 `;
 
 export const SCRIPT_DATA_PUSH = `#!/usr/bin/env bash
+# bionic-managed-script: data-push v2
 # Portable raw data sync script for data/raw/* entries in data/manifest.json.
 # Inside Bionic Hub: streams via \$BIONIC_DATA_PROXY_URL.
 # Standalone / Exported: uploads via gcloud storage cp / aws s3 cp using \$BIONIC_DATA_BUCKET.
@@ -221,7 +222,7 @@ if [[ ! -f "$MANIFEST" ]]; then
 fi
 
 python3 - "$MANIFEST" "$EVICT_LOCAL" <<'PY'
-import json, os, subprocess, sys, urllib.request
+import hashlib, json, os, subprocess, sys, urllib.request
 from pathlib import Path
 
 manifest_path = Path(sys.argv[1])
@@ -232,9 +233,22 @@ shim_token = os.environ.get("BIONIC_LOCAL_SHIM_TOKEN", "")
 bucket = os.environ.get("BIONIC_DATA_BUCKET", "").rstrip("/")
 changed = False
 
+def sha256_file(p: Path) -> str:
+    h = hashlib.sha256()
+    with p.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
 for entry in doc.get("entries", []):
-    fp = Path(entry["filepath"])
+    raw_fp = str(entry.get("filepath") or "").replace("\\\\", "/").lstrip("./")
     storage = entry.get("storage") or {}
+
+    # Skip shared read-only datasets and non-data/raw/ paths (never abort publish on /mnt/shared-data/!)
+    if storage.get("readOnly") or raw_fp.startswith("/mnt/shared-data/") or not raw_fp.startswith("data/raw/"):
+        continue
+
+    fp = Path(raw_fp)
     if storage.get("syncStatus") in ("synced", "remote_only") and storage.get("uri"):
         if evict and fp.exists():
             fp.unlink()
@@ -243,8 +257,14 @@ for entry in doc.get("entries", []):
             changed = True
             print(f"[evicted] {fp}")
         continue
-    if not fp.exists():
+    if not fp.exists() or fp.is_symlink() or not fp.is_file():
         continue
+
+    sha = str(entry.get("sha256") or "").strip()
+    if not sha:
+        sha = sha256_file(fp)
+        entry["sha256"] = sha
+        changed = True
 
     if proxy_url:
         req = urllib.request.Request(
@@ -252,18 +272,25 @@ for entry in doc.get("entries", []):
             data=json.dumps({
                 "filename": fp.name,
                 "sizeBytes": fp.stat().st_size,
-                "targetRelPath": entry["filepath"],
-                "sha256": entry.get("sha256", "")
+                "targetRelPath": raw_fp,
+                "sha256": sha
             }).encode(),
             headers={"Content-Type": "application/json", "X-Bionic-Shim-Token": shim_token},
             method="POST"
         )
         with urllib.request.urlopen(req, timeout=30) as resp:
             sess = json.loads(resp.read().decode())
-        subprocess.run(["curl", "-fsSL", "-X", "PUT", "-T", str(fp), sess["resumableSessionUri"]], check=True)
+        subprocess.run(
+            ["curl", "-fsSL", "-X", "PUT", "-H", "Content-Type: application/octet-stream", "-T", str(fp), sess["resumableSessionUri"]],
+            check=True
+        )
         complete_req = urllib.request.Request(
             f"{proxy_url}/upload-complete",
-            data=json.dumps({"dataObjectId": sess["dataObjectId"], "clientSha256": entry.get("sha256", "")}).encode(),
+            data=json.dumps({
+                "dataObjectId": sess["dataObjectId"],
+                "clientSha256": sha,
+                "targetRelPath": raw_fp
+            }).encode(),
             headers={"Content-Type": "application/json", "X-Bionic-Shim-Token": shim_token},
             method="POST"
         )
@@ -283,7 +310,7 @@ for entry in doc.get("entries", []):
         changed = True
         print(f"[pushed] {fp} -> {meta['storageUri']}")
     elif bucket:
-        dest = f"{bucket}/{entry.get('sha256', 'raw')[:16]}/{fp.name}"
+        dest = f"{bucket}/{sha[:16]}/{fp.name}"
         if bucket.startswith("gs://"):
             subprocess.run(["gcloud", "storage", "cp", str(fp), dest], check=True)
             provider = "gcs"
@@ -362,9 +389,10 @@ echo "OK: Reproducible analysis run completed."
 `;
 
 export const SCRIPT_PUBLISH = `#!/usr/bin/env bash
+# bionic-managed-script: publish v2
 # Portable report publishing script — zero hidden magic!
-# Inside Bionic Hub: commits snapshot & streams web-report/ to \$BIONIC_HUB_PUBLISH_URL
-#   (where Hub independently re-verifies grants, leaks, and private/public bucket isolation).
+# Inside Bionic Hub: verifies leaks, pushes raw data, commits & pushes Git snapshot, then streams
+#   web-report/ + _bionic_meta/ to \$BIONIC_HUB_PUBLISH_URL (where Hub independently re-verifies grants & leaks).
 # Standalone / Exported: deploys web-report/ directly to \$PUBLISH_TARGET
 #   (gs://bucket/prefix, s3://bucket/prefix, rsync://host/path, or a local directory).
 set -euo pipefail
@@ -377,6 +405,8 @@ TITLE="\${PUBLISH_TITLE:-Published Report}"
 SUMMARY="\${PUBLISH_SUMMARY:-}"
 NO_GIT=0
 DRY_RUN=0
+SKIP_VERIFY=0
+SKIP_DATA_PUSH=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -385,25 +415,29 @@ while [[ $# -gt 0 ]]; do
     --summary) SUMMARY="$2"; shift 2 ;;
     --no-git) NO_GIT=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
+    --skip-verify) SKIP_VERIFY=1; shift ;;
+    --skip-data-push) SKIP_DATA_PUSH=1; shift ;;
     *) echo "Unknown flag: $1" >&2; exit 2 ;;
   esac
 done
 
-# 1. Hard pre-publish provenance & leak verification
-./scripts/verify-data.sh
+# 1. Hard pre-publish provenance & leak verification (runs BEFORE pushing blobs or Git!)
+if [[ "$SKIP_VERIFY" -eq 0 ]]; then
+  ./scripts/verify-data.sh
+fi
 
-# 2. Push any un-synced raw datasets to object storage
-if [[ -x "scripts/data-push.sh" ]]; then
+# 2. Push any un-synced raw datasets to object storage (updates data/manifest.json with GCS pointers)
+if [[ "$SKIP_DATA_PUSH" -eq 0 && -x "scripts/data-push.sh" ]]; then
   ./scripts/data-push.sh
 fi
 
-# 3. Capture & push Git commit snapshot (auto-initializes Git inside Bionic Hub so forks clone the full module)
+# 3. Capture & push Git commit snapshot (only uses workspace-local .git, never a parent repo!)
 GIT_SHA="uncommitted"
 if [[ "$NO_GIT" -eq 0 ]]; then
-  if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1 && [[ -n "\${BIONIC_HUB_PUBLISH_URL:-}" ]]; then
+  if [[ ! -d ".git" && -n "\${BIONIC_HUB_PUBLISH_URL:-}" ]]; then
     git init -b main >/dev/null 2>&1 || git init >/dev/null 2>&1
   fi
-  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  if [[ -d ".git" ]]; then
     if [[ "$DRY_RUN" -eq 0 ]]; then
       git config user.name >/dev/null 2>&1 || git config user.name "Bionic Researcher"
       git config user.email >/dev/null 2>&1 || git config user.email "researcher@bionic.local"
@@ -430,7 +464,7 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   exit 0
 fi
 
-# 4a. Inside Bionic Hub -> stream archive (+ _bionic_meta/ manifest, bionic.yaml, test results) to Hub intake
+# 4a. Inside Bionic Hub -> stream archive (+ _bionic_meta/ manifest, bionic.yaml, UTF-8 publish_meta, workspace stats)
 if [[ -n "\${BIONIC_HUB_PUBLISH_URL:-}" ]]; then
   TMP_STAGE="$(mktemp -d /tmp/bionic-pub-stage-XXXXXX)"
   TMP_TAR="$(mktemp /tmp/bionic-report-XXXXXX.tar.gz)"
@@ -439,13 +473,23 @@ if [[ -n "\${BIONIC_HUB_PUBLISH_URL:-}" ]]; then
   mkdir -p "$TMP_STAGE/_bionic_meta"
   [[ -f "data/manifest.json" ]] && cp "data/manifest.json" "$TMP_STAGE/_bionic_meta/manifest.json"
   [[ -f "bionic.yaml" ]] && cp "bionic.yaml" "$TMP_STAGE/_bionic_meta/bionic.yaml"
+  if [[ -n "\${BIONIC_WORKSPACE_STATS_JSON:-}" ]]; then
+    printf '%s' "$BIONIC_WORKSPACE_STATS_JSON" > "$TMP_STAGE/_bionic_meta/workspace_stats.json"
+  fi
+  python3 - "$TMP_STAGE/_bionic_meta/publish_meta.json" "$TITLE" "$SUMMARY" "$VISIBILITY" "$GIT_SHA" <<'PY'
+import json, sys
+out_path, title, summary, visibility, sha = sys.argv[1:6]
+with open(out_path, "w", encoding="utf-8") as f:
+    json.dump({"title": title, "summary": summary, "visibility": visibility, "gitCommitSha": sha}, f, ensure_ascii=False)
+PY
   if compgen -G "tests/scientific/*_results.json" >/dev/null 2>&1; then
     mkdir -p "$TMP_STAGE/_bionic_meta/test_results"
     cp tests/scientific/*_results.json "$TMP_STAGE/_bionic_meta/test_results/"
   fi
   tar -czf "$TMP_TAR" -C "$TMP_STAGE" .
-  SAFE_TITLE="$(printf '%s' "$TITLE" | tr -d '\r\n')"
-  SAFE_SUMMARY="$(printf '%s' "$SUMMARY" | tr -d '\r\n')"
+  # ASCII-safe HTTP header fallback (full UTF-8 values are carried in _bionic_meta/publish_meta.json)
+  SAFE_TITLE="$(printf '%s' "$TITLE" | LC_ALL=C tr -cd '[:print:]' | tr -d '\\r\\n')"
+  SAFE_SUMMARY="$(printf '%s' "$SUMMARY" | LC_ALL=C tr -cd '[:print:]' | tr -d '\\r\\n' | head -c 500)"
   curl -fsSL -X POST "$BIONIC_HUB_PUBLISH_URL" \\
     -H "X-Bionic-Shim-Token: \${BIONIC_LOCAL_SHIM_TOKEN:-}" \\
     -H "X-Bionic-Git-Commit: $GIT_SHA" \\
@@ -483,6 +527,57 @@ esac
 
 echo "OK: Published web-report/ (commit $GIT_SHA) to $TARGET"
 `;
+
+/**
+ * Safely upgrades unmodified legacy Bionic-generated `scripts/publish.sh` and `scripts/data-push.sh`
+ * in existing Hub workspaces so older projects gain Hub Git push, UTF-8 metadata, and `/mnt/shared-data/`
+ * skipping without ever overwriting user-customized scripts.
+ */
+export function upgradeManagedScriptsIfLegacy(workspaceDir: string = WORKSPACE_DIR): string[] {
+  const upgraded: string[] = [];
+  const targets: Array<{ name: string; content: string; currentMarker: string; legacyHeader: string }> = [
+    {
+      name: 'publish.sh',
+      content: SCRIPT_PUBLISH,
+      currentMarker: '# bionic-managed-script: publish v2',
+      legacyHeader: '# Portable report publishing script — zero hidden magic!'
+    },
+    {
+      name: 'data-push.sh',
+      content: SCRIPT_DATA_PUSH,
+      currentMarker: '# bionic-managed-script: data-push v2',
+      legacyHeader: '# Portable raw data sync script for data/raw/* entries in data/manifest.json.'
+    }
+  ];
+
+  const scriptsDir = path.join(workspaceDir, 'scripts');
+  if (!fs.existsSync(scriptsDir)) return upgraded;
+
+  for (const t of targets) {
+    const targetPath = path.join(scriptsDir, t.name);
+    if (!fs.existsSync(targetPath)) continue;
+    try {
+      const existing = fs.readFileSync(targetPath, 'utf-8');
+      if (existing.includes(t.currentMarker)) continue;
+      if (existing.includes('# bionic-custom')) continue;
+      if (!existing.includes(t.legacyHeader)) continue;
+      // Preserve a backup of the legacy script outside executable path before upgrading
+      const backupPath = path.join(scriptsDir, `.legacy-${t.name}.bak`);
+      if (!fs.existsSync(backupPath)) {
+        fs.writeFileSync(backupPath, existing, 'utf-8');
+      }
+      atomicWriteFileSync(targetPath, t.content);
+      try {
+        fs.chmodSync(targetPath, 0o755);
+      } catch {}
+      applyTargetOwnership(targetPath);
+      upgraded.push(t.name);
+    } catch {
+      // Never block startup/publish on best-effort upgrade
+    }
+  }
+  return upgraded;
+}
 
 export function scaffoldPortableProjectScripts(workspaceDir: string = WORKSPACE_DIR): void {
   const scriptsDir = path.join(workspaceDir, 'scripts');

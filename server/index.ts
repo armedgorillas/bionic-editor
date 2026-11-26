@@ -64,9 +64,13 @@ import {
   updateManifestFilepath,
   readManifest,
   syncManifestArtifacts,
+  syncRawDataDirectoryToManifest,
+  refreshDerivedManifestMirrors,
+  ensureDataGitignore,
   wasManifestWrittenInternallyRecently,
   MANIFEST_REL_PATH
 } from './services/dataManifest.js';
+import { scaffoldPortableProjectScripts, upgradeManagedScriptsIfLegacy } from './services/portableScripts.js';
 import {
   getVenvStatus,
   createVenv,
@@ -586,9 +590,141 @@ apiRouter.get('/models', async (_req, res) => {
   });
 });
 
-// Portable Publish endpoint — executes the workspace's own scripts/publish.sh (zero hidden magic)
+// Lightweight workspace metadata endpoint for Editor Publish/Save modal (reads bionic.yaml + stats)
+apiRouter.get('/workspace/meta', (_req, res) => {
+  try {
+    res.json(collectWorkspaceMeta());
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Unified Save Snapshot endpoint:
+// 1. Update data/manifest.json (+ DATA_MANIFEST.md + web-report/data/data_manifest.json) & bionic.yaml
+// 2. Push un-synced raw data via scripts/data-push.sh -> GCS & refresh derived manifest mirrors
+// 3. Git commit code/spec/manifest & push to Hub Git proxy (durable GCS bundle backup)
+// 4. Sync metadata & latest commit SHA to Hub DB so the Project Homepage updates immediately
+apiRouter.post('/hub/save', rejectInSandbox, async (req, res) => {
+  try {
+    scaffoldPortableProjectScripts(WORKSPACE_DIR);
+    upgradeManagedScriptsIfLegacy(WORKSPACE_DIR);
+
+    const title = typeof req.body?.title === 'string' && req.body.title.trim()
+      ? req.body.title.replace(/[\r\n\0]/g, ' ').trim().slice(0, 160)
+      : undefined;
+    const summary = typeof req.body?.summary === 'string'
+      ? req.body.summary.replace(/\0/g, '').trim().slice(0, 4000)
+      : undefined;
+    const message = typeof req.body?.message === 'string' && req.body.message.trim()
+      ? req.body.message.replace(/[\r\n\0]/g, ' ').trim().slice(0, 140)
+      : (title ? `save: ${title}` : 'save: workspace snapshot');
+
+    // Step 1: Refresh manifest + bionic.yaml + .gitignore
+    const manifestSync = await syncRawDataDirectoryToManifest();
+    if (title !== undefined || summary !== undefined) {
+      updateBionicYamlFields(WORKSPACE_DIR, { title, summary });
+    }
+    ensureDataGitignore();
+
+    // Step 2: Push raw datasets to GCS & synchronously refresh manifest mirrors before Git commit
+    const spawnOpts = getTargetSpawnOptions();
+    let dataPushStdout = '';
+    const dataPushScript = path.join(WORKSPACE_DIR, 'scripts', 'data-push.sh');
+    if (fs.existsSync(dataPushScript)) {
+      const dp = await execFileAsync('bash', [dataPushScript], {
+        cwd: WORKSPACE_DIR,
+        timeout: 300_000,
+        maxBuffer: 10 * 1024 * 1024,
+        ...spawnOpts
+      });
+      dataPushStdout = dp.stdout.trim();
+      await refreshDerivedManifestMirrors();
+    }
+
+    // Step 3: Git commit workspace-local repo & push to Hub Git proxy
+    let gitCommitSha = '';
+    if (!fs.existsSync(path.join(WORKSPACE_DIR, '.git'))) {
+      await execFileAsync('git', ['init', '-b', 'main'], { cwd: WORKSPACE_DIR, timeout: 15_000, ...spawnOpts }).catch(
+        () => execFileAsync('git', ['init'], { cwd: WORKSPACE_DIR, timeout: 15_000, ...spawnOpts })
+      );
+    }
+    await execFileAsync('git', ['config', 'user.name'], { cwd: WORKSPACE_DIR, ...spawnOpts }).catch(() =>
+      execFileAsync('git', ['config', 'user.name', 'Bionic Researcher'], { cwd: WORKSPACE_DIR, ...spawnOpts })
+    );
+    await execFileAsync('git', ['config', 'user.email'], { cwd: WORKSPACE_DIR, ...spawnOpts }).catch(() =>
+      execFileAsync('git', ['config', 'user.email', 'researcher@bionic.local'], { cwd: WORKSPACE_DIR, ...spawnOpts })
+    );
+    await execFileAsync('git', ['add', '-A'], { cwd: WORKSPACE_DIR, timeout: 30_000, ...spawnOpts });
+    let hasStaged = false;
+    try {
+      await execFileAsync('git', ['diff', '--cached', '--quiet'], { cwd: WORKSPACE_DIR, ...spawnOpts });
+    } catch {
+      hasStaged = true;
+    }
+    if (hasStaged) {
+      await execFileAsync('git', ['commit', '-m', message], { cwd: WORKSPACE_DIR, timeout: 30_000, ...spawnOpts });
+    }
+    try {
+      const { stdout: shaOut } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: WORKSPACE_DIR, ...spawnOpts });
+      gitCommitSha = shaOut.trim();
+    } catch {
+      gitCommitSha = '';
+    }
+
+    if (BIONIC_HUB_MODE && BIONIC_SHIM_URL && BIONIC_PROJECT_ID && BIONIC_LOCAL_SHIM_TOKEN && gitCommitSha) {
+      const hubGitUrl = `${BIONIC_SHIM_URL}/git/${BIONIC_PROJECT_ID}.git`;
+      await execFileAsync(
+        'git',
+        ['-c', `http.extraHeader=X-Bionic-Shim-Token: ${BIONIC_LOCAL_SHIM_TOKEN}`, 'push', hubGitUrl, 'HEAD:refs/heads/main', '--force'],
+        { cwd: WORKSPACE_DIR, timeout: 120_000, maxBuffer: 10 * 1024 * 1024, ...spawnOpts }
+      );
+    }
+
+    // Step 4: Sync workspace stats, bionic.yaml, manifest pointers & gitCommitSha to Hub DB (non-fatal on 404)
+    const meta = collectWorkspaceMeta();
+    let hubSynced = false;
+    if (BIONIC_HUB_MODE && BIONIC_SHIM_URL && BIONIC_LOCAL_SHIM_TOKEN) {
+      try {
+        const syncRes = await fetch(`${BIONIC_SHIM_URL}/sync-meta`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Bionic-Shim-Token': BIONIC_LOCAL_SHIM_TOKEN
+          },
+          body: JSON.stringify({ ...meta, gitCommitSha })
+        });
+        hubSynced = syncRes.ok;
+      } catch {
+        hubSynced = false;
+      }
+    }
+
+    res.json({
+      success: true,
+      gitCommitSha,
+      manifestSync,
+      dataPushStdout,
+      hubSynced
+    });
+  } catch (err: any) {
+    res.status(400).json({
+      success: false,
+      error: err.stderr?.trim() || err.message || 'Save snapshot failed',
+      stdout: err.stdout?.trim() || ''
+    });
+  }
+});
+
+// Unified Portable Publish endpoint — leak-safe ordered pipeline delegating to scripts/*.sh:
+// 1. Update data/manifest.json + bionic.yaml + .gitignore (upgrade legacy managed scripts if unmodified)
+// 2. Run ./scripts/verify-data.sh BEFORE pushing blobs or Git (fail fast on leaks/missing report)
+// 3. Push raw datasets via ./scripts/data-push.sh & synchronously refresh manifest mirrors
+// 4. Commit & push code/spec/manifest to Hub Git + stream web-report/ & _bionic_meta/ via ./scripts/publish.sh
 apiRouter.post('/hub/publish', rejectInSandbox, async (req, res) => {
   try {
+    scaffoldPortableProjectScripts(WORKSPACE_DIR);
+    upgradeManagedScriptsIfLegacy(WORKSPACE_DIR);
+
     const scriptPath = path.join(WORKSPACE_DIR, 'scripts', 'publish.sh');
     if (!fs.existsSync(scriptPath)) {
       return res.status(400).json({ error: 'Workspace is missing scripts/publish.sh' });
@@ -598,23 +734,82 @@ apiRouter.post('/hub/publish', rejectInSandbox, async (req, res) => {
       ? req.body.title.replace(/[\r\n\0]/g, ' ').trim().slice(0, 140)
       : 'Published Report';
     const summary = typeof req.body?.summary === 'string'
-      ? req.body.summary.replace(/[\r\n\0]/g, ' ').trim().slice(0, 1000)
+      ? req.body.summary.replace(/\0/g, '').trim().slice(0, 4000)
       : '';
     const dryRun = Boolean(req.body?.dryRun);
+    const noGit = Boolean(req.body?.noGit);
 
-    const args = [scriptPath, '--visibility', visibility, '--title', title, '--summary', summary];
-    if (dryRun) args.push('--dry-run');
-    if (req.body?.noGit) args.push('--no-git');
+    // Step 1: Auto-register/refresh data/raw/* in data/manifest.json & update bionic.yaml
+    await syncRawDataDirectoryToManifest();
+    if (req.body?.updateBionicYaml !== false) {
+      updateBionicYamlFields(WORKSPACE_DIR, {
+        ...(title ? { title } : {}),
+        ...(summary ? { summary } : {})
+      });
+    }
+    ensureDataGitignore();
 
     const spawnOpts = getTargetSpawnOptions();
+
+    // Step 2: Pre-flight verification BEFORE pushing raw data or Git
+    const verifyScript = path.join(WORKSPACE_DIR, 'scripts', 'verify-data.sh');
+    if (fs.existsSync(verifyScript)) {
+      await execFileAsync('bash', [verifyScript], {
+        cwd: WORKSPACE_DIR,
+        timeout: 120_000,
+        maxBuffer: 10 * 1024 * 1024,
+        ...spawnOpts
+      });
+    }
+
+    // Step 3: Push un-synced raw datasets to GCS & synchronously refresh manifest mirrors before Git commit
+    const dataPushScript = path.join(WORKSPACE_DIR, 'scripts', 'data-push.sh');
+    let dataPushRan = false;
+    if (!dryRun && fs.existsSync(dataPushScript)) {
+      await execFileAsync('bash', [dataPushScript], {
+        cwd: WORKSPACE_DIR,
+        timeout: 300_000,
+        maxBuffer: 10 * 1024 * 1024,
+        ...spawnOpts
+      });
+      await refreshDerivedManifestMirrors();
+      dataPushRan = true;
+    }
+
+    // Step 4 & 5: Collect fresh workspace stats (passed via env so it never pollutes WORKSPACE_DIR) & run publish.sh
+    const wsMeta = collectWorkspaceMeta();
+    const publishSpawnOpts = getTargetSpawnOptions({
+      BIONIC_WORKSPACE_STATS_JSON: JSON.stringify({
+        workspaceDir: wsMeta.workspaceDir,
+        rootFile: wsMeta.rootFile,
+        totalBytes: wsMeta.totalBytes,
+        fileCount: wsMeta.fileCount,
+        lastEditedAt: wsMeta.lastEditedAt,
+        topLevelItems: wsMeta.topLevelItems
+      })
+    });
+
+    const args = [scriptPath, '--visibility', visibility, '--title', title, '--summary', summary];
+    const scriptText = fs.readFileSync(scriptPath, 'utf-8');
+    if (scriptText.includes('--skip-verify')) args.push('--skip-verify');
+    if (dataPushRan && scriptText.includes('--skip-data-push')) args.push('--skip-data-push');
+    if (dryRun) args.push('--dry-run');
+    if (noGit) args.push('--no-git');
+
     const { stdout, stderr } = await execFileAsync('bash', args, {
       cwd: WORKSPACE_DIR,
       timeout: 180_000,
       maxBuffer: 10 * 1024 * 1024,
-      ...spawnOpts
+      ...publishSpawnOpts
     });
 
-    res.json({ success: true, stdout: stdout.trim(), stderr: stderr.trim() });
+    let publication: any = null;
+    try {
+      const lastLine = stdout.trim().split('\n').pop() || '';
+      if (lastLine.startsWith('{')) publication = JSON.parse(lastLine);
+    } catch {}
+
+    res.json({ success: true, publication, stdout: stdout.trim(), stderr: stderr.trim() });
   } catch (err: any) {
     res.status(400).json({
       success: false,
@@ -779,92 +974,96 @@ function updateBionicYamlFields(workspaceDir: string, updates: { title?: string;
   return parseSimpleBionicYaml(raw);
 }
 
-apiRouter.get('/hub-local/project-meta', requireDaemonToken, (_req, res) => {
-  try {
-    const skipDirs = new Set(['.venv', '.git', 'node_modules', 'lost+found', '__pycache__', '.pytest_cache']);
-    let totalBytes = 0;
-    let fileCount = 0;
-    let latestMtimeMs = 0;
+function collectWorkspaceMeta() {
+  const skipDirs = new Set(['.venv', '.git', 'node_modules', 'lost+found', '__pycache__', '.pytest_cache']);
+  let totalBytes = 0;
+  let fileCount = 0;
+  let latestMtimeMs = 0;
 
-    const walk = (dir: string, depth: number) => {
-      if (depth > 8) return;
-      let entries: fs.Dirent[];
-      try {
-        entries = fs.readdirSync(dir, { withFileTypes: true });
-      } catch {
-        return;
-      }
-      for (const e of entries) {
-        if (skipDirs.has(e.name)) continue;
-        const full = path.join(dir, e.name);
-        let st: fs.Stats;
-        try {
-          st = fs.lstatSync(full);
-        } catch {
-          continue;
-        }
-        if (st.isSymbolicLink()) continue;
-        if (st.isDirectory()) {
-          walk(full, depth + 1);
-        } else if (st.isFile()) {
-          totalBytes += st.size;
-          fileCount++;
-          if (st.mtimeMs > latestMtimeMs) latestMtimeMs = st.mtimeMs;
-        }
-      }
-    };
-    walk(WORKSPACE_DIR, 0);
-
-    const topLevelItems: Array<{ name: string; path: string; isDirectory: boolean; sizeBytes: number; updatedAt: string }> = [];
+  const walk = (dir: string, depth: number) => {
+    if (depth > 8) return;
+    let entries: fs.Dirent[];
     try {
-      for (const e of fs.readdirSync(WORKSPACE_DIR, { withFileTypes: true })) {
-        if (skipDirs.has(e.name) || e.name.startsWith('.')) continue;
-        const full = path.join(WORKSPACE_DIR, e.name);
-        try {
-          const st = fs.lstatSync(full);
-          topLevelItems.push({
-            name: e.name,
-            path: e.name,
-            isDirectory: st.isDirectory(),
-            sizeBytes: st.isFile() ? st.size : 0,
-            updatedAt: st.mtime.toISOString()
-          });
-        } catch {}
-      }
-    } catch {}
-    topLevelItems.sort((a, b) => Number(b.isDirectory) - Number(a.isDirectory) || a.name.localeCompare(b.name));
-
-    const yamlPath = path.join(WORKSPACE_DIR, 'bionic.yaml');
-    const bionicYaml = fs.existsSync(yamlPath)
-      ? parseSimpleBionicYaml(fs.readFileSync(yamlPath, 'utf-8'))
-      : null;
-
-    let manifestEntries: Array<{ filepath: string; sizeBytes: number; sha256: string; uri?: string }> = [];
-    const manifestPath = path.join(WORKSPACE_DIR, 'data', 'manifest.json');
-    if (fs.existsSync(manifestPath)) {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (skipDirs.has(e.name)) continue;
+      const full = path.join(dir, e.name);
+      let st: fs.Stats;
       try {
-        const doc = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
-        if (Array.isArray(doc?.entries)) {
-          manifestEntries = doc.entries.map((item: any) => ({
-            filepath: String(item.filepath || ''),
-            sizeBytes: Number(item.sizeBytes || 0),
-            sha256: String(item.sha256 || ''),
-            uri: item.storage?.uri ? String(item.storage.uri) : undefined
-          }));
-        }
+        st = fs.lstatSync(full);
+      } catch {
+        continue;
+      }
+      if (st.isSymbolicLink()) continue;
+      if (st.isDirectory()) {
+        walk(full, depth + 1);
+      } else if (st.isFile()) {
+        totalBytes += st.size;
+        fileCount++;
+        if (st.mtimeMs > latestMtimeMs) latestMtimeMs = st.mtimeMs;
+      }
+    }
+  };
+  walk(WORKSPACE_DIR, 0);
+
+  const topLevelItems: Array<{ name: string; path: string; isDirectory: boolean; sizeBytes: number; updatedAt: string }> = [];
+  try {
+    for (const e of fs.readdirSync(WORKSPACE_DIR, { withFileTypes: true })) {
+      if (skipDirs.has(e.name) || e.name.startsWith('.')) continue;
+      const full = path.join(WORKSPACE_DIR, e.name);
+      try {
+        const st = fs.lstatSync(full);
+        topLevelItems.push({
+          name: e.name,
+          path: e.name,
+          isDirectory: st.isDirectory(),
+          sizeBytes: st.isFile() ? st.size : 0,
+          updatedAt: st.mtime.toISOString()
+        });
       } catch {}
     }
+  } catch {}
+  topLevelItems.sort((a, b) => Number(b.isDirectory) - Number(a.isDirectory) || a.name.localeCompare(b.name));
 
-    res.json({
-      workspaceDir: WORKSPACE_DIR,
-      rootFile: getProjectRootFile(),
-      totalBytes,
-      fileCount,
-      lastEditedAt: latestMtimeMs > 0 ? new Date(latestMtimeMs).toISOString() : null,
-      bionicYaml,
-      topLevelItems,
-      manifestEntries
-    });
+  const yamlPath = path.join(WORKSPACE_DIR, 'bionic.yaml');
+  const bionicYaml = fs.existsSync(yamlPath)
+    ? parseSimpleBionicYaml(fs.readFileSync(yamlPath, 'utf-8'))
+    : null;
+
+  let manifestEntries: Array<{ filepath: string; sizeBytes: number; sha256: string; uri?: string }> = [];
+  const manifestPath = path.join(WORKSPACE_DIR, 'data', 'manifest.json');
+  if (fs.existsSync(manifestPath)) {
+    try {
+      const doc = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+      if (Array.isArray(doc?.entries)) {
+        manifestEntries = doc.entries.map((item: any) => ({
+          filepath: String(item.filepath || ''),
+          sizeBytes: Number(item.sizeBytes || 0),
+          sha256: String(item.sha256 || ''),
+          uri: item.storage?.uri ? String(item.storage.uri) : undefined
+        }));
+      }
+    } catch {}
+  }
+
+  return {
+    workspaceDir: WORKSPACE_DIR,
+    rootFile: getProjectRootFile(),
+    totalBytes,
+    fileCount,
+    lastEditedAt: latestMtimeMs > 0 ? new Date(latestMtimeMs).toISOString() : null,
+    bionicYaml,
+    topLevelItems,
+    manifestEntries
+  };
+}
+
+apiRouter.get('/hub-local/project-meta', requireDaemonToken, (_req, res) => {
+  try {
+    res.json(collectWorkspaceMeta());
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
