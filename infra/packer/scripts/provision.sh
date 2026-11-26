@@ -13,8 +13,16 @@ sudo apt-get install -y -qq nodejs
 # Install uv (fast deterministic Python env builder)
 curl -LsSf https://astral.sh/uv/install.sh | sudo env UV_INSTALL_DIR=/usr/local/bin sh
 
-# Install pinned OpenCode V2 CLI
-sudo npm install -g "opencode-ai@${OPENCODE_VERSION:-latest}" || curl -fsSL https://opencode.ai/install | sudo env OPENCODE_INSTALL_DIR=/usr/local/bin bash || true
+# Install OpenCode V2 CLI globally at /usr/local/bin/opencode (accessible to bionic-user & all SSH users)
+OPENCODE_TMP_HOME="$(mktemp -d)"
+if [[ -n "${OPENCODE_VERSION:-}" && "${OPENCODE_VERSION}" != "latest" && "${OPENCODE_VERSION}" != "2.0.0" ]]; then
+  HOME="$OPENCODE_TMP_HOME" curl -fsSL https://opencode.ai/v2/install | HOME="$OPENCODE_TMP_HOME" bash -s -- --no-modify-path --version "$OPENCODE_VERSION"
+else
+  HOME="$OPENCODE_TMP_HOME" curl -fsSL https://opencode.ai/v2/install | HOME="$OPENCODE_TMP_HOME" bash -s -- --no-modify-path
+fi
+sudo install -m 0755 "$OPENCODE_TMP_HOME/.opencode/bin/opencode" /usr/local/bin/opencode
+rm -rf "$OPENCODE_TMP_HOME"
+/usr/local/bin/opencode --version
 
 # Install gcsfuse for read-only shared institutional datasets (/mnt/shared-data)
 export GCSFUSE_REPO="gcsfuse-$(lsb_release -c -s)"
