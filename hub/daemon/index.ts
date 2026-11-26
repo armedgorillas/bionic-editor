@@ -379,8 +379,10 @@ export class BionicVmDaemon {
         res.writeHead(upRes.statusCode || 502, upRes.headers);
         upRes.pipe(res);
       });
-      req.on('close', () => {
-        if (!up.destroyed) up.destroy();
+      // In Node 18+/22, `req` emits 'close' as soon as the request body finishes reading (before the
+      // upstream responds!). Only abort `up` if the client disconnects before `res` finishes.
+      res.on('close', () => {
+        if (!res.writableEnded && !up.destroyed) up.destroy();
       });
       up.on('error', (err) => {
         if (!res.headersSent) {
@@ -388,7 +390,11 @@ export class BionicVmDaemon {
           res.end(`bioniceditor local error: ${err.message}`);
         }
       });
-      req.pipe(up);
+      if (req.method === 'GET' || req.method === 'HEAD') {
+        up.end();
+      } else {
+        req.pipe(up);
+      }
     });
 
     this.editorMtlsServer.on('upgrade', (req, socket, head) => {

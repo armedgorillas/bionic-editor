@@ -269,7 +269,7 @@ export class EditorReverseProxy {
       keepalive = setInterval(() => {
         if (!closed && !reply.raw.writableEnded) reply.raw.write(': keepalive\n\n');
       }, 15_000);
-      req.raw.on('close', cleanup);
+      reply.raw.on('close', cleanup);
       return;
     }
 
@@ -486,7 +486,7 @@ export class EditorReverseProxy {
           host: internalIp,
           port,
           path: probePath,
-          method: scope === 'editor' ? 'HEAD' : 'GET',
+          method: 'GET',
           headers: scope === 'editor' ? { 'x-bionic-origin-scope': 'editor' } : undefined,
           key: creds.keyPem,
           cert: creds.certPem,
@@ -501,14 +501,21 @@ export class EditorReverseProxy {
         (res) => {
           res.resume();
           const code = res.statusCode || 502;
+          if (code >= 500) {
+            console.warn(`[EditorProxy] VM readiness probe got HTTP ${code} for ${projectId} (${internalIp}:${port}${probePath})`);
+          }
           resolve(code >= 200 && code < 500);
         }
       );
       req.on('timeout', () => {
+        console.warn(`[EditorProxy] VM readiness probe timed out for ${projectId} (${internalIp}:${port}${probePath})`);
         req.destroy();
         resolve(false);
       });
-      req.on('error', () => resolve(false));
+      req.on('error', (err) => {
+        console.warn(`[EditorProxy] VM readiness probe error for ${projectId} (${internalIp}:${port}${probePath}): ${err.message}`);
+        resolve(false);
+      });
       req.end();
     });
   }
@@ -567,8 +574,10 @@ export class EditorReverseProxy {
           proxyRes.on('end', resolve);
         }
       );
-      req.raw.on('close', () => {
-        if (!proxyReq.destroyed) proxyReq.destroy();
+      // In Node 18+/22, `req.raw` emits 'close' when the request body finishes reading (before
+      // the VM responds!). Only abort `proxyReq` if the client disconnects before `reply.raw` finishes.
+      reply.raw.on('close', () => {
+        if (!reply.raw.writableEnded && !proxyReq.destroyed) proxyReq.destroy();
       });
       proxyReq.on('error', (err) => {
         if (!reply.raw.headersSent) {
@@ -582,7 +591,11 @@ export class EditorReverseProxy {
         }
         resolve();
       });
-      req.raw.pipe(proxyReq);
+      if (req.method === 'GET' || req.method === 'HEAD') {
+        proxyReq.end();
+      } else {
+        req.raw.pipe(proxyReq);
+      }
     });
   }
 
