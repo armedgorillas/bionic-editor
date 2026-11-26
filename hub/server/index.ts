@@ -780,14 +780,24 @@ export async function createHubServer(overrides?: Partial<HubConfig>): Promise<H
   app.get('/api/internal/models', async (req, reply) => {
     const workload = await requireWorkloadJwt(req, reply);
     if (!workload) return;
-    const grpRes = await db.query<{ slug: string }>(
-      `SELECT g.slug FROM projects p
-       JOIN group_memberships gm ON gm.user_id = p.owner_id
-       JOIN groups g ON g.id = gm.group_id
-       WHERE p.id = $1`,
-      [workload.projectId]
-    );
-    const models = await llmGateway.listModelsForUser(grpRes.rows.map((r) => r.slug));
+    const [ownerRes, grpRes] = await Promise.all([
+      db.query<{ role: string }>(
+        `SELECT u.role FROM projects p JOIN users u ON u.id = p.owner_id WHERE p.id = $1`,
+        [workload.projectId]
+      ),
+      db.query<{ slug: string }>(
+        `SELECT g.slug FROM projects p
+         JOIN group_memberships gm ON gm.user_id = p.owner_id
+         JOIN groups g ON g.id = gm.group_id
+         WHERE p.id = $1`,
+        [workload.projectId]
+      )
+    ]);
+    const groupSlugs = new Set(grpRes.rows.map((r) => r.slug));
+    const ownerRole = ownerRes.rows[0]?.role;
+    if (ownerRole === 'admin') groupSlugs.add('admins');
+    if (ownerRole === 'researcher') groupSlugs.add('researchers');
+    const models = await llmGateway.listModelsForUser(Array.from(groupSlugs));
     return { hubManaged: true, models };
   });
 
@@ -862,7 +872,8 @@ export async function createHubServer(overrides?: Partial<HubConfig>): Promise<H
     });
     let usage = { promptTokens: 0, completionTokens: 0, cachedTokens: 0, statusCode: 500 };
     try {
-      usage = await llmGateway.proxyGoogleGemini(authz.model, action, (req.body || {}) as any, reply);
+      const alt = typeof (req.query as any)?.alt === 'string' ? String((req.query as any).alt) : undefined;
+      usage = await llmGateway.proxyGoogleGemini(authz.model, action, (req.body || {}) as any, reply, alt);
     } finally {
       await llmGateway.settleUsage({
         projectId: workload.projectId,

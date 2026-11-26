@@ -209,6 +209,7 @@ WorkingDirectory=/var/lib/bionic/workspace
 RuntimeDirectory=bionic-editor
 RuntimeDirectoryMode=0750
 Environment=BIONIC_HUB_MODE=true
+Environment=BASE_SPEC=PLAN.md
 Environment=HOST=127.0.0.1
 Environment=PORT=3003
 Environment=BIONIC_UNIX_SOCKET=/run/bionic-editor/app.sock

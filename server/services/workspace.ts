@@ -50,6 +50,7 @@ export interface FileTreeOptions {
 const ALWAYS_EXCLUDED_DIRS = new Set([
   '.venv',
   '.git',
+  'lost+found',
   'node_modules',
   '__pycache__',
   '.pytest_cache',
@@ -121,9 +122,9 @@ export function ensureWorkspaceDir(): void {
     ensureDirWithOwnership(WORKSPACE_DIR);
     initDefaultTemplate();
   } else {
-    // If workspace exists but is empty, scaffold default template
-    const entries = fs.readdirSync(WORKSPACE_DIR);
-    if (entries.length === 0 || (entries.length === 1 && entries[0] === '.git')) {
+    // If workspace exists but contains only filesystem/git metadata (e.g. ext4 `lost+found`, `.git`), scaffold default template
+    const entries = fs.readdirSync(WORKSPACE_DIR).filter((e) => e !== '.git' && e !== 'lost+found');
+    if (entries.length === 0) {
       initDefaultTemplate();
     }
   }

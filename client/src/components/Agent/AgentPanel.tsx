@@ -21,6 +21,7 @@ import {
   GitBranch
 } from 'lucide-react';
 import type { ChatMessage, TokenUsage, ChatSessionSummary, SubagentJobView, AgentTimelineItem } from '../../types';
+import type { HubManagedModel } from '../../services/api';
 import { MarkdownMessage } from './MarkdownMessage';
 import { SubagentCard } from './SubagentCard';
 
@@ -31,6 +32,10 @@ interface AgentPanelProps {
   onSendMessage: (content: string) => Promise<void>;
   provider: string;
   onChangeProvider: (provider: string) => void;
+  hubManaged?: boolean;
+  hubModels?: HubManagedModel[];
+  selectedModel?: string;
+  onChangeModel?: (modelSlug: string) => void;
   onOpenSettings: () => void;
   hasActiveKey?: boolean;
   harness?: 'opencode' | 'built-in';
@@ -55,6 +60,10 @@ export const AgentPanel: React.FC<AgentPanelProps> = ({
   onSendMessage,
   provider,
   onChangeProvider,
+  hubManaged = false,
+  hubModels = [],
+  selectedModel = '',
+  onChangeModel,
   onOpenSettings,
   hasActiveKey = true,
   harness = 'built-in',
@@ -308,18 +317,40 @@ export const AgentPanel: React.FC<AgentPanelProps> = ({
         </div>
 
         <div className="flex items-center space-x-1 flex-shrink-0">
-          <select
-            value={provider}
-            onChange={(e) => onChangeProvider(e.target.value)}
-            aria-label="AI Provider"
-            className="text-[11px] max-w-[104px] bg-panel border border-edge rounded px-1.5 py-0.5 text-ink outline-none hover:bg-surface font-medium truncate"
-          >
-            <option value="gemini">Gemini</option>
-            <option value="demo">Demo</option>
-            <option value="openai">OpenAI</option>
-            <option value="anthropic">Claude</option>
-            <option value="ollama">Ollama</option>
-          </select>
+          {hubManaged && hubModels.length > 0 && onChangeModel ? (
+            <select
+              value={provider === 'demo' ? '__demo__' : selectedModel || hubModels[0].slug}
+              onChange={(e) => {
+                if (e.target.value === '__demo__') {
+                  onChangeProvider('demo');
+                } else {
+                  onChangeModel(e.target.value);
+                }
+              }}
+              aria-label="AI Model"
+              className="text-[11px] max-w-[140px] bg-panel border border-edge rounded px-1.5 py-0.5 text-ink outline-none hover:bg-surface font-medium truncate"
+            >
+              {hubModels.map((m) => (
+                <option key={m.slug} value={m.slug}>
+                  {m.displayName}
+                </option>
+              ))}
+              <option value="__demo__">Demo</option>
+            </select>
+          ) : (
+            <select
+              value={provider}
+              onChange={(e) => onChangeProvider(e.target.value)}
+              aria-label="AI Provider"
+              className="text-[11px] max-w-[104px] bg-panel border border-edge rounded px-1.5 py-0.5 text-ink outline-none hover:bg-surface font-medium truncate"
+            >
+              <option value="gemini">Gemini</option>
+              <option value="demo">Demo</option>
+              <option value="openai">OpenAI</option>
+              <option value="anthropic">Claude</option>
+              <option value="ollama">Ollama</option>
+            </select>
+          )}
 
           <button
             onClick={() => {

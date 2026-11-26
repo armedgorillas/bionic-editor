@@ -9,10 +9,17 @@ import {
   GEMINI_API_KEY,
   OPENAI_API_KEY,
   ANTHROPIC_API_KEY,
+  BIONIC_HUB_MODE,
+  BIONIC_SHIM_URL,
+  BIONIC_LOCAL_SHIM_TOKEN,
   getTargetSpawnOptions
 } from '../config.js';
 import { atomicWriteFileSync } from './fsSafe.js';
-import { ensureOpenCodeWorkspaceConfig } from './opencodeConfig.js';
+import {
+  ensureOpenCodeWorkspaceConfig,
+  applyHubManagedOpenCodeConfig,
+  type HubSyncModelSpec
+} from './opencodeConfig.js';
 import { getSession, saveSession } from './sessionManager.js';
 import type { AgentConfig, StepEvent, TokenUsage } from './agent.js';
 
@@ -107,8 +114,43 @@ function extractToolOutputText(content: any): string {
   return '';
 }
 
-function parseModelRef(provider: string, model?: string): { providerID: string; id: string } | undefined {
+function parseModelRef(
+  provider: string,
+  model?: string,
+  hubModels?: HubSyncModelSpec[]
+): { providerID: string; id: string } | undefined {
   const raw = model?.trim() || '';
+
+  if (BIONIC_HUB_MODE) {
+    if (raw.includes('/')) {
+      const [providerID, ...rest] = raw.split('/');
+      return { providerID, id: rest.join('/') };
+    }
+    const list = hubModels || [];
+    const matched =
+      list.find((m) => m.slug === raw || m.modelId === raw) ||
+      list.find((m) => {
+        if (provider === 'gemini') return m.protocol === 'google';
+        if (provider === 'anthropic') return m.protocol === 'anthropic';
+        if (provider === 'openai') return m.protocol === 'openai';
+        return false;
+      }) ||
+      list[0];
+    if (matched) {
+      const hubProviderId =
+        matched.protocol === 'google'
+          ? 'bionic-google'
+          : matched.protocol === 'anthropic'
+            ? 'bionic-anthropic'
+            : 'bionic-openai';
+      return { providerID: hubProviderId, id: matched.slug };
+    }
+    if (!raw) return undefined;
+    const fallbackProviderId =
+      provider === 'gemini' ? 'bionic-google' : provider === 'anthropic' ? 'bionic-anthropic' : 'bionic-openai';
+    return { providerID: fallbackProviderId, id: raw };
+  }
+
   if (!raw) {
     if (provider === 'gemini') return { providerID: 'google', id: 'gemini-2.5-flash' };
     if (provider === 'openai') return { providerID: 'openai', id: 'gpt-4o' };
@@ -140,6 +182,7 @@ export class OpenCodeServerBridge {
   private broadcastFn: BroadcastFn | null = null;
   private isShuttingDown = false;
   private syncedCredentials = new Map<string, string>();
+  private hubModelsCache: HubSyncModelSpec[] = [];
 
   // Bidirectional session mapping
   private bionicToOpenCode = new Map<string, string>();
@@ -250,12 +293,18 @@ export class OpenCodeServerBridge {
       BIONIC_API_URL: getBionicApiUrl(),
       PATH: `${path.join(WORKSPACE_DIR, '.venv', 'bin')}:${process.env.PATH || ''}`
     };
-    if (GEMINI_API_KEY) {
-      extraEnv.GEMINI_API_KEY = GEMINI_API_KEY;
-      extraEnv.GOOGLE_API_KEY = GEMINI_API_KEY;
+    if (BIONIC_HUB_MODE) {
+      // Allow OpenCode's managed providers (`{env:BIONIC_LOCAL_SHIM_TOKEN}`) to auth to bionic-daemon localhost shim.
+      // Shell tools receive a separate sanitized env via PUT /api/session/:id/environment.
+      if (BIONIC_LOCAL_SHIM_TOKEN) extraEnv.BIONIC_LOCAL_SHIM_TOKEN = BIONIC_LOCAL_SHIM_TOKEN;
+    } else {
+      if (GEMINI_API_KEY) {
+        extraEnv.GEMINI_API_KEY = GEMINI_API_KEY;
+        extraEnv.GOOGLE_API_KEY = GEMINI_API_KEY;
+      }
+      if (OPENAI_API_KEY) extraEnv.OPENAI_API_KEY = OPENAI_API_KEY;
+      if (ANTHROPIC_API_KEY) extraEnv.ANTHROPIC_API_KEY = ANTHROPIC_API_KEY;
     }
-    if (OPENAI_API_KEY) extraEnv.OPENAI_API_KEY = OPENAI_API_KEY;
-    if (ANTHROPIC_API_KEY) extraEnv.ANTHROPIC_API_KEY = ANTHROPIC_API_KEY;
 
     const spawnOpts = getTargetSpawnOptions(extraEnv);
     const proc = spawn(opencodeBin, ['serve', '--hostname', '127.0.0.1', '--port', String(port)], {
@@ -728,14 +777,45 @@ export class OpenCodeServerBridge {
     }
   }
 
+  private async syncHubModelsIntoOpenCode(): Promise<HubSyncModelSpec[]> {
+    if (!BIONIC_HUB_MODE) return [];
+    try {
+      const resp = await fetch(`${BIONIC_SHIM_URL}/models`, {
+        headers: { 'X-Bionic-Shim-Token': BIONIC_LOCAL_SHIM_TOKEN }
+      });
+      if (resp.ok) {
+        const data = (await resp.json()) as { models?: any[] };
+        const models: HubSyncModelSpec[] = (Array.isArray(data.models) ? data.models : []).map((m) => ({
+          slug: String(m.slug || ''),
+          displayName: String(m.displayName || m.slug || ''),
+          protocol: (m.protocol === 'anthropic' || m.protocol === 'google' ? m.protocol : 'openai') as
+            | 'anthropic'
+            | 'openai'
+            | 'google',
+          modelId: String(m.modelId || m.slug || '')
+        })).filter((m) => Boolean(m.slug));
+        if (models.length > 0) {
+          this.hubModelsCache = models;
+          applyHubManagedOpenCodeConfig({ models, mcpServers: [], shimUrl: BIONIC_SHIM_URL });
+        }
+      }
+    } catch {
+      // Keep cached models if shim temporarily unavailable
+    }
+    return this.hubModelsCache;
+  }
+
   private async ensureOpenCodeSession(bionicSessionId: string, config: AgentConfig): Promise<string> {
-    // Sync provider credentials through OpenCode's Credential API (never into shell env!)
-    const integrationID = mapProviderToIntegration(config.provider);
-    await this.syncProviderCredentials({
-      geminiApiKey: integrationID === 'google' ? (config.apiKey || GEMINI_API_KEY) : GEMINI_API_KEY,
-      openaiApiKey: integrationID === 'openai' ? (config.apiKey || OPENAI_API_KEY) : OPENAI_API_KEY,
-      anthropicApiKey: integrationID === 'anthropic' ? (config.apiKey || ANTHROPIC_API_KEY) : ANTHROPIC_API_KEY
-    });
+    // In standalone mode, sync personal provider credentials through OpenCode's Credential API.
+    // In Hub Mode, models route through bionic-daemon localhost shim (`bionic-google`/`bionic-anthropic`/`bionic-openai`).
+    if (!BIONIC_HUB_MODE) {
+      const integrationID = mapProviderToIntegration(config.provider);
+      await this.syncProviderCredentials({
+        geminiApiKey: integrationID === 'google' ? (config.apiKey || GEMINI_API_KEY) : GEMINI_API_KEY,
+        openaiApiKey: integrationID === 'openai' ? (config.apiKey || OPENAI_API_KEY) : OPENAI_API_KEY,
+        anthropicApiKey: integrationID === 'anthropic' ? (config.apiKey || ANTHROPIC_API_KEY) : ANTHROPIC_API_KEY
+      });
+    }
 
     let ocId = this.bionicToOpenCode.get(bionicSessionId);
 
@@ -748,7 +828,7 @@ export class OpenCodeServerBridge {
       }
     }
 
-    const modelRef = parseModelRef(config.provider, config.model);
+    const modelRef = parseModelRef(config.provider, config.model, this.hubModelsCache);
 
     if (!ocId) {
       const createRes = await fetch(`${this.baseUrl}/api/session`, {
@@ -809,6 +889,9 @@ export class OpenCodeServerBridge {
     onEvent: (event: StepEvent) => void
   ): Promise<{ text: string; tokens: TokenUsage }> {
     ensureOpenCodeWorkspaceConfig();
+    if (BIONIC_HUB_MODE) {
+      await this.syncHubModelsIntoOpenCode();
+    }
     await this.ensureStarted(opencodeBin);
     const ocSessionId = await this.ensureOpenCodeSession(bionicSessionId, config);
 

@@ -695,14 +695,85 @@ apiRouter.post('/hub-local/sync-config', requireDaemonToken, (req, res) => {
 });
 
 // Agent endpoints
-apiRouter.get('/agent/config', (_req, res) => {
+apiRouter.get('/agent/config', async (_req, res) => {
   const isOpenCodeInstalled = Boolean(getOpenCodeBinary());
+
+  if (BIONIC_HUB_MODE) {
+    let hubModels: Array<{
+      slug: string;
+      displayName: string;
+      provider: string;
+      protocol: 'anthropic' | 'openai' | 'google';
+      modelId: string;
+    }> = [];
+    try {
+      const resp = await fetch(`${BIONIC_SHIM_URL}/models`, {
+        headers: { 'X-Bionic-Shim-Token': BIONIC_LOCAL_SHIM_TOKEN }
+      });
+      if (resp.ok) {
+        const data = (await resp.json()) as { models?: typeof hubModels };
+        hubModels = Array.isArray(data.models) ? data.models : [];
+      }
+    } catch {
+      // Hub shim temporarily unreachable; keep empty list
+    }
+
+    if (hubModels.length > 0) {
+      try {
+        applyHubManagedOpenCodeConfig({
+          models: hubModels.map((m) => ({
+            slug: m.slug,
+            displayName: m.displayName || m.slug,
+            protocol: m.protocol,
+            modelId: m.modelId || m.slug
+          })),
+          mcpServers: [],
+          shimUrl: BIONIC_SHIM_URL
+        });
+      } catch {
+        // Best-effort sync
+      }
+    }
+
+    const hasGemini = hubModels.some((m) => m.protocol === 'google' || m.provider === 'gemini' || m.provider === 'vertex');
+    const hasOpenai = hubModels.some((m) => m.protocol === 'openai' || m.provider === 'openai');
+    const hasAnthropic = hubModels.some((m) => m.protocol === 'anthropic' || m.provider === 'anthropic' || m.provider === 'aws_bedrock');
+    const firstModel = hubModels[0];
+    const mapToUiProvider = (m?: { provider: string; protocol: string }) => {
+      if (!m) return 'gemini';
+      if (m.protocol === 'google' || m.provider === 'gemini' || m.provider === 'vertex') return 'gemini';
+      if (m.protocol === 'anthropic' || m.provider === 'anthropic' || m.provider === 'aws_bedrock') return 'anthropic';
+      return 'openai';
+    };
+
+    return res.json({
+      hubManaged: true,
+      hasGeminiKey: hasGemini,
+      hasOpenaiKey: hasOpenai,
+      hasAnthropicKey: hasAnthropic,
+      isOpenCodeInstalled,
+      harness: isOpenCodeInstalled ? 'opencode' : 'built-in',
+      models: hubModels,
+      defaultModel: firstModel?.slug || '',
+      availableProviders: [
+        { id: 'gemini', name: 'Google Gemini (Hub Managed)', active: hasGemini },
+        { id: 'openai', name: 'OpenAI (Hub Managed)', active: hasOpenai },
+        { id: 'anthropic', name: 'Anthropic / Bedrock Claude (Hub Managed)', active: hasAnthropic },
+        { id: 'demo', name: 'Demo / Scientific Assistant (Offline)', active: true }
+      ],
+      defaultProvider: firstModel ? mapToUiProvider(firstModel) : 'gemini'
+    });
+  }
+
   res.json({
+    hubManaged: false,
     hasGeminiKey: Boolean(GEMINI_API_KEY),
     hasOpenaiKey: Boolean(OPENAI_API_KEY),
     hasAnthropicKey: Boolean(ANTHROPIC_API_KEY),
     isOpenCodeInstalled,
     harness: isOpenCodeInstalled ? 'opencode' : 'built-in',
+    models: [],
+    defaultModel: GEMINI_API_KEY ? 'gemini-2.5-flash' : (OPENAI_API_KEY ? 'gpt-4o' : 'claude-3-5-sonnet-20241022'),
     availableProviders: [
       { id: 'gemini', name: 'Google Gemini (Gemini 2.5 Flash / Pro)', active: Boolean(GEMINI_API_KEY) },
       { id: 'openai', name: 'OpenAI (GPT-4o)', active: Boolean(OPENAI_API_KEY) },

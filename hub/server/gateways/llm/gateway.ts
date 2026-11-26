@@ -86,8 +86,9 @@ export class LlmGatewayService {
         ? input.claimedUserId
         : proj.owner_id;
 
-    // 2. Load user's groups and requested model
-    const [grpRes, modelRes] = await Promise.all([
+    // 2. Load user's role + groups and requested model (match by slug OR spec.modelId)
+    const [userRes, grpRes, modelRes] = await Promise.all([
+      this.db.query<{ role: string }>(`SELECT role FROM users WHERE id = $1`, [verifiedUserId]),
       this.db.query<{ slug: string }>(
         `SELECT g.slug FROM group_memberships gm JOIN groups g ON g.id = gm.group_id WHERE gm.user_id = $1`,
         [verifiedUserId]
@@ -96,7 +97,8 @@ export class LlmGatewayService {
         `SELECT m.slug, m.allowed_group_ids, m.enabled, r.parsed_json
          FROM models m
          JOIN config_revisions r ON r.id = m.active_revision_id
-         WHERE m.slug = $1`,
+         WHERE m.slug = $1 OR r.parsed_json->'spec'->>'modelId' = $1
+         LIMIT 1`,
         [input.modelSlug]
       )
     ]);
@@ -106,6 +108,9 @@ export class LlmGatewayService {
     }
 
     const userGroups = new Set(grpRes.rows.map((r) => r.slug));
+    const userRole = userRes.rows[0]?.role;
+    if (userRole === 'admin') userGroups.add('admins');
+    if (userRole === 'researcher') userGroups.add('researchers');
     const allowed: string[] = modelRow.allowed_group_ids || [];
     const isPermitted = userGroups.has('admins') || allowed.some((g) => userGroups.has(g));
     if (!isPermitted) {
@@ -539,7 +544,8 @@ export class LlmGatewayService {
     model: ResolvedModelRecord,
     action: string,
     body: Record<string, any>,
-    reply: FastifyReply
+    reply: FastifyReply,
+    alt?: string
   ): Promise<{ promptTokens: number; completionTokens: number; cachedTokens: number; statusCode: number }> {
     const spec = model.config.spec;
     if (spec.protocol !== 'google') {
@@ -548,7 +554,8 @@ export class LlmGatewayService {
     const apiKey = spec.auth.type === 'secret_ref' ? await this.secrets.resolve(spec.auth.apiKeySecretRef) : '';
     const base = (spec.baseUrl || 'https://generativelanguage.googleapis.com/v1beta').replace(/\/+$/, '');
     const safeAction = action.replace(/[^a-zA-Z0-9_:-]/g, '');
-    const upstreamUrl = `${base}/models/${encodeURIComponent(spec.modelId)}:${safeAction}`;
+    const safeAlt = alt && /^[a-z0-9_-]+$/i.test(alt) ? `?alt=${encodeURIComponent(alt)}` : '';
+    const upstreamUrl = `${base}/models/${encodeURIComponent(spec.modelId)}:${safeAction}${safeAlt}`;
     await assertSafeOutboundUrl(upstreamUrl, {
       allowHttp: this.cfg.devMode,
       allowedPrivateCidrs: this.cfg.allowedPrivateCidrs,

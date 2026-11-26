@@ -9,6 +9,7 @@ let watcher: any = null;
 const IGNORED_SEGMENTS = new Set([
   '.venv',
   '.git',
+  'lost+found',
   'node_modules',
   '__pycache__',
   '.pytest_cache',

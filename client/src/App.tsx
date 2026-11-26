@@ -44,6 +44,7 @@ import {
   streamAgentChat,
   fetchAgentConfig,
   saveAgentConfig,
+  type HubManagedModel,
   fetchChatSessions,
   fetchChatSession,
   syncChatSession,
@@ -162,6 +163,8 @@ export const App: React.FC = () => {
     openai: false,
     anthropic: false
   });
+  const [hubManaged, setHubManaged] = useState<boolean>(() => Boolean(getBionicConfig().hubMode));
+  const [hubModels, setHubModels] = useState<HubManagedModel[]>([]);
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const [isHelpOpen, setIsHelpOpen] = useState<boolean>(false);
   const [isStreaming, setIsStreaming] = useState<boolean>(false);
@@ -257,6 +260,31 @@ export const App: React.FC = () => {
           openai: agCfg.hasOpenaiKey,
           anthropic: agCfg.hasAnthropicKey
         });
+        if (agCfg.hubManaged) {
+          setHubManaged(true);
+          const managedList = Array.isArray(agCfg.models) ? agCfg.models : [];
+          setHubModels(managedList);
+          if (managedList.length > 0) {
+            const preferredSlug = agCfg.defaultModel || managedList[0].slug;
+            setAgentConfig((prev: any) => {
+              const stillValid = managedList.some(
+                (m) => m.slug === prev.selectedModel || m.modelId === prev.selectedModel
+              );
+              if (stillValid) return prev;
+              const next = { ...prev, selectedModel: preferredSlug };
+              try {
+                localStorage.setItem('bionic_agent_config', JSON.stringify(next));
+              } catch {}
+              return next;
+            });
+            if (agCfg.defaultProvider) {
+              setAgentProvider(agCfg.defaultProvider);
+              try {
+                localStorage.setItem('bionic_agent_provider', agCfg.defaultProvider);
+              } catch {}
+            }
+          }
+        }
         if (manifest) {
           setDataManifestHasIssues(Boolean(manifest.hasIssues));
           setDataManifestCount(manifest.entries?.length || 0);
@@ -1291,6 +1319,28 @@ export const App: React.FC = () => {
                     localStorage.setItem('bionic_agent_provider', p);
                   } catch {}
                 }}
+                hubManaged={hubManaged}
+                hubModels={hubModels}
+                selectedModel={agentConfig.selectedModel}
+                onChangeModel={(slug) => {
+                  const chosen = hubModels.find((m) => m.slug === slug);
+                  const uiProv = chosen
+                    ? chosen.protocol === 'google' || chosen.provider === 'gemini' || chosen.provider === 'vertex'
+                      ? 'gemini'
+                      : chosen.protocol === 'anthropic' || chosen.provider === 'anthropic' || chosen.provider === 'aws_bedrock'
+                        ? 'anthropic'
+                        : 'openai'
+                    : 'gemini';
+                  setAgentProvider(uiProv);
+                  setAgentConfig((prev: any) => {
+                    const next = { ...prev, selectedModel: slug };
+                    try {
+                      localStorage.setItem('bionic_agent_config', JSON.stringify(next));
+                      localStorage.setItem('bionic_agent_provider', uiProv);
+                    } catch {}
+                    return next;
+                  });
+                }}
                 onOpenSettings={() => setIsSettingsOpen(true)}
                 hasActiveKey={hasCurrentKey}
                 harness={agentHarness}
@@ -1317,11 +1367,29 @@ export const App: React.FC = () => {
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
         config={agentConfig}
+        hubManaged={hubManaged}
+        hubModels={hubModels}
         onSaveConfig={async (newConfig) => {
           setAgentConfig(newConfig);
           try {
             localStorage.setItem('bionic_agent_config', JSON.stringify(newConfig));
           } catch {}
+          if (hubManaged) {
+            const chosen = hubModels.find((m) => m.slug === newConfig.selectedModel || m.modelId === newConfig.selectedModel);
+            if (chosen) {
+              const uiProv =
+                chosen.protocol === 'google' || chosen.provider === 'gemini' || chosen.provider === 'vertex'
+                  ? 'gemini'
+                  : chosen.protocol === 'anthropic' || chosen.provider === 'anthropic' || chosen.provider === 'aws_bedrock'
+                    ? 'anthropic'
+                    : 'openai';
+              setAgentProvider(uiProv);
+              try {
+                localStorage.setItem('bionic_agent_provider', uiProv);
+              } catch {}
+            }
+            return;
+          }
           try {
             const res = await saveAgentConfig(newConfig);
             if (res.success) {

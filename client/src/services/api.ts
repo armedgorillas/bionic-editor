@@ -228,12 +228,23 @@ export async function runPython(scriptPath: string, args: string[] = []): Promis
   return res.json();
 }
 
+export interface HubManagedModel {
+  slug: string;
+  displayName: string;
+  provider: string;
+  protocol: 'anthropic' | 'openai' | 'google';
+  modelId: string;
+}
+
 export async function fetchAgentConfig(): Promise<{
+  hubManaged?: boolean;
   hasGeminiKey: boolean;
   hasOpenaiKey: boolean;
   hasAnthropicKey: boolean;
   isOpenCodeInstalled: boolean;
   harness: 'opencode' | 'built-in';
+  models?: HubManagedModel[];
+  defaultModel?: string;
   availableProviders: any[];
   defaultProvider: string;
 }> {
