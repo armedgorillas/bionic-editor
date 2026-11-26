@@ -148,63 +148,127 @@ export class EditorReverseProxy {
       return;
     }
 
-    // 4. Auto-Wake SSE progress stream (uses shared LISTEN EventEmitter + immediate initial check, #16!)
+    // 4. Auto-Wake SSE progress stream (uses shared LISTEN EventEmitter + live mTLS readiness check, #16!)
     if (urlPath === '/__bionic_wake/events') {
       reply.hijack();
       reply.raw.writeHead(200, {
         'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        Connection: 'keep-alive'
+        'Cache-Control': 'no-cache, no-transform',
+        Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no'
       });
+      reply.raw.write('retry: 5000\n\n');
 
-      const cur = await this.db.query<{
-        status: string;
-        status_message: string | null;
-        compute_internal_ip: string | null;
-        compute_zone: string | null;
-        compute_instance_name: string | null;
-      }>(
-        `SELECT status, status_message, compute_internal_ip, compute_zone, compute_instance_name FROM projects WHERE id = $1`,
-        [route.resourceId]
-      );
-      const curRow = cur.rows[0];
-      let curIp = curRow?.compute_internal_ip || null;
-      if (curRow?.status === 'running' && !curIp && this.compute && curRow.compute_instance_name) {
-        try {
-          const info = await this.compute.getInstance(curRow.compute_zone || this.cfg.gcpDefaultZone, curRow.compute_instance_name);
-          if (info?.internalIp) {
-            curIp = info.internalIp;
-            await this.db.query(`UPDATE projects SET compute_internal_ip = $2, updated_at = NOW() WHERE id = $1`, [
-              route.resourceId,
-              curIp
-            ]);
-          }
-        } catch {}
-      }
-      // Only signal ready when BOTH status === 'running' AND compute_internal_ip is populated (prevents infinite reload!)
-      if (!curRow || (curRow.status === 'running' && curIp) || curRow.status === 'error') {
-        reply.raw.write(
-          `data: ${JSON.stringify({ projectId: route.resourceId, status: curRow?.status || 'error', error: curRow?.status_message })}\n\n`
-        );
-        reply.raw.end();
-        return;
-      }
+      let closed = false;
+      let checking = false;
+      let pollTimer: NodeJS.Timeout | null = null;
+      let keepalive: NodeJS.Timeout | null = null;
 
-      const onState = (ev: any) => {
-        if (ev?.projectId === route.resourceId) {
-          reply.raw.write(`data: ${JSON.stringify(ev)}\n\n`);
-          if ((ev.status === 'running' && ev.internalIp) || ev.status === 'error') {
-            cleanup();
-            reply.raw.end();
-          }
-        }
+      const sendEvent = (payload: Record<string, any>) => {
+        if (closed || reply.raw.writableEnded) return;
+        reply.raw.write(`data: ${JSON.stringify(payload)}\n\n`);
       };
-      const keepalive = setInterval(() => reply.raw.write(': keepalive\n\n'), 15_000);
+
       const cleanup = () => {
-        clearInterval(keepalive);
+        if (closed) return;
+        closed = true;
+        if (pollTimer) clearInterval(pollTimer);
+        if (keepalive) clearInterval(keepalive);
         this.db.events.off('project_state_changes', onState);
       };
+
+      const checkReady = async () => {
+        if (closed || checking) return;
+        checking = true;
+        try {
+          const cur = await this.db.query<{
+            status: string;
+            status_message: string | null;
+            compute_internal_ip: string | null;
+            compute_zone: string | null;
+            compute_instance_name: string | null;
+          }>(
+            `SELECT status, status_message, compute_internal_ip, compute_zone, compute_instance_name FROM projects WHERE id = $1`,
+            [route.resourceId]
+          );
+          if (closed) return;
+          const curRow = cur.rows[0];
+          if (!curRow || curRow.status === 'error') {
+            sendEvent({
+              projectId: route.resourceId,
+              status: 'error',
+              ready: false,
+              error: curRow?.status_message || 'Project unavailable'
+            });
+            cleanup();
+            reply.raw.end();
+            return;
+          }
+
+          let curIp = curRow.compute_internal_ip || null;
+          if (curRow.status === 'running' && !curIp && this.compute && curRow.compute_instance_name) {
+            try {
+              const info = await this.compute.getInstance(
+                curRow.compute_zone || this.cfg.gcpDefaultZone,
+                curRow.compute_instance_name
+              );
+              if (info?.internalIp) {
+                curIp = info.internalIp;
+                await this.db.query(`UPDATE projects SET compute_internal_ip = $2, updated_at = NOW() WHERE id = $1`, [
+                  route.resourceId,
+                  curIp
+                ]);
+              }
+            } catch {}
+          }
+
+          if (curRow.status === 'running' && curIp) {
+            const vmReady = await this.isVmReady(route.resourceId, curIp, route.scope);
+            if (closed) return;
+            if (vmReady) {
+              sendEvent({ projectId: route.resourceId, status: 'running', ready: true });
+              cleanup();
+              reply.raw.end();
+              return;
+            }
+            sendEvent({
+              projectId: route.resourceId,
+              status: 'starting',
+              detail: 'Waiting for editor service to accept connections…',
+              ready: false
+            });
+            return;
+          }
+
+          sendEvent({ projectId: route.resourceId, status: curRow.status, ready: false });
+        } finally {
+          checking = false;
+        }
+      };
+
+      const onState = (ev: any) => {
+        if (closed || ev?.projectId !== route.resourceId) return;
+        if (ev.status === 'running') {
+          checkReady().catch(() => {});
+          return;
+        }
+        sendEvent({ projectId: route.resourceId, status: ev.status, ready: false, error: ev.error });
+        if (ev.status === 'error') {
+          cleanup();
+          reply.raw.end();
+        }
+      };
+
+      await checkReady();
+      if (closed) return;
+
       this.db.events.on('project_state_changes', onState);
+      pollTimer = setInterval(() => {
+        checkReady().catch(() => {});
+      }, 4_000);
+      keepalive = setInterval(() => {
+        if (!closed && !reply.raw.writableEnded) reply.raw.write(': keepalive\n\n');
+      }, 15_000);
       req.raw.on('close', cleanup);
       return;
     }
@@ -405,6 +469,50 @@ export class EditorReverseProxy {
     fs.createReadStream(full).pipe(reply.raw);
   }
 
+  /**
+   * Verifies the Editor VM daemon (and local bioniceditor service for editor scope) is actually
+   * accepting mTLS requests before telling the auto-wake splash screen to reload.
+   */
+  private async isVmReady(projectId: string, internalIp: string, scope: OriginScope): Promise<boolean> {
+    if (this.compute?.kind === 'local') return true;
+    const creds = this.ca.getHubClientCredentials();
+    const expectedSan = `spiffe://bionic/project/${projectId}`;
+    const port = scope === 'editor' ? 3000 : 3002;
+    const probePath = scope === 'editor' ? '/' : '/api/internal/health';
+
+    return new Promise<boolean>((resolve) => {
+      const req = https.request(
+        {
+          host: internalIp,
+          port,
+          path: probePath,
+          method: scope === 'editor' ? 'HEAD' : 'GET',
+          headers: scope === 'editor' ? { 'x-bionic-origin-scope': 'editor' } : undefined,
+          key: creds.keyPem,
+          cert: creds.certPem,
+          ca: creds.caCertPem,
+          rejectUnauthorized: true,
+          timeout: 2500,
+          checkServerIdentity: (_host, peerCert) => {
+            const san = extractSpiffeSanFromPeerCert(peerCert);
+            return san === expectedSan ? undefined : new Error(`VM SAN mismatch: ${san}`);
+          }
+        },
+        (res) => {
+          res.resume();
+          const code = res.statusCode || 502;
+          resolve(code >= 200 && code < 500);
+        }
+      );
+      req.on('timeout', () => {
+        req.destroy();
+        resolve(false);
+      });
+      req.on('error', () => resolve(false));
+      req.end();
+    });
+  }
+
   private async forwardHttpToVm(
     projectId: string,
     internalIp: string,
@@ -415,6 +523,7 @@ export class EditorReverseProxy {
   ): Promise<void> {
     const creds = this.ca.getHubClientCredentials();
     const expectedSan = `spiffe://bionic/project/${projectId}`;
+    const wantsHtml = req.method === 'GET' && String(req.headers.accept || '').includes('text/html');
 
     const forwardHeaders: Record<string, any> = {
       ...req.headers,
@@ -446,6 +555,13 @@ export class EditorReverseProxy {
           }
         },
         (proxyRes) => {
+          if (wantsHtml && proxyRes.statusCode === 502 && !reply.raw.headersSent) {
+            proxyRes.resume();
+            reply.raw.writeHead(503, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+            reply.raw.end(renderAutoWakeHtml(projectId, 'starting'));
+            resolve();
+            return;
+          }
           reply.raw.writeHead(proxyRes.statusCode || 502, proxyRes.headers);
           proxyRes.pipe(reply.raw);
           proxyRes.on('end', resolve);
@@ -456,8 +572,13 @@ export class EditorReverseProxy {
       });
       proxyReq.on('error', (err) => {
         if (!reply.raw.headersSent) {
-          reply.raw.writeHead(502, { 'Content-Type': 'application/json' });
-          reply.raw.end(JSON.stringify({ error: `Editor VM upstream error: ${err.message}` }));
+          if (wantsHtml) {
+            reply.raw.writeHead(503, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+            reply.raw.end(renderAutoWakeHtml(projectId, 'starting'));
+          } else {
+            reply.raw.writeHead(502, { 'Content-Type': 'application/json' });
+            reply.raw.end(JSON.stringify({ error: `Editor VM upstream error: ${err.message}` }));
+          }
         }
         resolve();
       });
@@ -570,17 +691,28 @@ function renderAutoWakeHtml(projectId: string, status: string): string {
 <body>
   <div class="card">
     <h1>Waking your Bionic workspace…</h1>
-    <p>Resuming compute instance and verifying workspace services for <code>${safeId}</code>.</p>
+    <p id="detail">Resuming compute instance and verifying workspace services for <code>${safeId}</code>.</p>
     <div id="status" class="badge">${safeStatus}</div>
   </div>
   <script>
+    let reloading = false;
+    const statusEl = document.getElementById('status');
+    const detailEl = document.getElementById('detail');
     const es = new EventSource('/__bionic_wake/events');
     es.onmessage = (e) => {
       try {
         const ev = JSON.parse(e.data);
-        document.getElementById('status').textContent = ev.status || 'starting';
-        if (ev.status === 'running') { es.close(); setTimeout(() => location.reload(), 600); }
-        if (ev.status === 'error') { document.getElementById('status').textContent = 'error: ' + (ev.error || 'wake failed'); es.close(); }
+        if (ev.detail) detailEl.textContent = ev.detail;
+        statusEl.textContent = ev.status || 'starting';
+        if (ev.ready === true && !reloading) {
+          reloading = true;
+          statusEl.textContent = 'ready — opening editor…';
+          es.close();
+          setTimeout(() => location.reload(), 2500);
+        } else if (ev.status === 'error') {
+          statusEl.textContent = 'error: ' + (ev.error || 'wake failed');
+          es.close();
+        }
       } catch {}
     };
   </script>

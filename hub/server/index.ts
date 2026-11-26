@@ -1069,6 +1069,13 @@ export async function createHubServer(overrides?: Partial<HubConfig>): Promise<H
     app.get('/', async (_req, reply) => {
       return reply.type('text/html; charset=utf-8').send(fs.readFileSync(path.join(clientDist, 'index.html'), 'utf-8'));
     });
+    const serveFavicon = async (_req: FastifyRequest, reply: FastifyReply) => {
+      const iconPath = path.join(clientDist, 'favicon.png');
+      if (!fs.existsSync(iconPath)) return reply.code(404).send({ error: 'Not found' });
+      return reply.type('image/png').header('Cache-Control', 'public, max-age=86400').send(fs.readFileSync(iconPath));
+    };
+    app.get('/favicon.png', serveFavicon);
+    app.get('/favicon.ico', serveFavicon);
     app.get<{ Params: { '*': string } }>('/assets/*', async (req, reply) => {
       const rel = (req.params['*'] || '').replace(/^\/+/, '');
       if (!rel || rel.includes('..')) return reply.code(403).send({ error: 'Forbidden' });
@@ -1077,7 +1084,15 @@ export async function createHubServer(overrides?: Partial<HubConfig>): Promise<H
         return reply.code(404).send({ error: 'Asset not found' });
       }
       const ext = path.extname(full).toLowerCase();
-      const mime = ext === '.js' ? 'application/javascript; charset=utf-8' : ext === '.css' ? 'text/css; charset=utf-8' : 'application/octet-stream';
+      const mimeMap: Record<string, string> = {
+        '.js': 'application/javascript; charset=utf-8',
+        '.css': 'text/css; charset=utf-8',
+        '.png': 'image/png',
+        '.svg': 'image/svg+xml',
+        '.ico': 'image/x-icon',
+        '.webp': 'image/webp'
+      };
+      const mime = mimeMap[ext] || 'application/octet-stream';
       return reply.type(mime).header('Cache-Control', 'public, max-age=31536000, immutable').send(fs.readFileSync(full));
     });
   }

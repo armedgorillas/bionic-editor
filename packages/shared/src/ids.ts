@@ -36,12 +36,37 @@ export function generateUlid(nowMs: number = Date.now()): string {
   return timeChars.join('') + randChars.join('');
 }
 
+export function generateShortId(length = 8): string {
+  // Cryptographic random Crockford Base32 chars (5 bits/char; 8 chars = 40 bits = ~1.1T IDs)
+  const byteCount = Math.ceil((length * 5) / 8);
+  const randBytes = crypto.randomBytes(byteCount);
+  const chars = new Array<string>(length);
+  let bitBuffer = 0;
+  let bitCount = 0;
+  let outIdx = 0;
+  for (const byte of randBytes) {
+    bitBuffer = (bitBuffer << 8) | byte;
+    bitCount += 8;
+    while (bitCount >= 5 && outIdx < length) {
+      bitCount -= 5;
+      chars[outIdx++] = CROCKFORD_LOWER[(bitBuffer >>> bitCount) & 0x1f];
+    }
+  }
+  return chars.join('');
+}
+
+const SHORT_ID_PREFIXES = new Set<IdPrefix>(['prj', 'pub', 'run']);
+
 export function createId(prefix: IdPrefix, nowMs?: number): string {
+  if (SHORT_ID_PREFIXES.has(prefix)) {
+    return `${prefix}-${generateShortId(8)}`;
+  }
   return `${prefix}-${generateUlid(nowMs)}`;
 }
 
 const DNS_LABEL_REGEX = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
-const PREFIXED_ID_REGEX = /^(prj|pub|run|dat|usr|grp|rev|job|tok|ses)-[0-9a-hjkmnp-tv-z]{26}$/;
+// Accept both simplified 8-char Crockford IDs and legacy 26-char ULIDs
+const PREFIXED_ID_REGEX = /^(prj|pub|run|dat|usr|grp|rev|job|tok|ses)-[0-9a-hjkmnp-tv-z]{8,26}$/;
 
 export function isValidDnsLabel(label: string): boolean {
   return DNS_LABEL_REGEX.test(label);

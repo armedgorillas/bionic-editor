@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from 'react';
 import {
-  FlaskConical,
   FolderGit2,
   BookOpen,
   ShieldCheck,
@@ -313,7 +312,7 @@ export const App: React.FC = () => {
       <div className="min-h-screen flex items-center justify-center p-6">
         <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900/90 p-8 shadow-2xl space-y-5">
           <div className="flex items-center space-x-3">
-            <FlaskConical className="w-8 h-8 text-sky-400" />
+            <img src="/favicon.png" alt="Bionic Hub" className="w-8 h-8 rounded object-contain flex-shrink-0" />
             <div>
               <h1 className="text-xl font-semibold text-white">Bionic Hub</h1>
               <p className="text-xs text-slate-400">
@@ -432,7 +431,7 @@ export const App: React.FC = () => {
       <header className="border-b border-slate-800 bg-slate-900/80 px-6 py-3 flex items-center justify-between">
         <div className="flex items-center space-x-6">
           <div className="flex items-center space-x-2">
-            <FlaskConical className="w-6 h-6 text-sky-400" />
+            <img src="/favicon.png" alt="Bionic Hub" className="w-6 h-6 rounded object-contain flex-shrink-0" />
             <span className="font-semibold text-white">Bionic Hub</span>
           </div>
           <nav className="flex items-center space-x-1 text-sm">
@@ -545,6 +544,8 @@ export const App: React.FC = () => {
                   <div className="flex items-center gap-2 text-xs">
                     <a
                       href={`/api/v1/auth/handoff?scope=editor&resource=${p.id}&next=/`}
+                      target="_blank"
+                      rel="noopener noreferrer"
                       className="px-3 py-1.5 rounded bg-sky-500/20 text-sky-300 hover:bg-sky-500/30 flex items-center space-x-1"
                     >
                       <ExternalLink className="w-3.5 h-3.5" />

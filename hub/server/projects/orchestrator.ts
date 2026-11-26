@@ -29,7 +29,12 @@ export class ProjectOrchestrator {
     idleTimeoutMinutes?: number;
     fromPublicationId?: string;
   }): Promise<{ id: string; slug: string; status: ProjectStatus }> {
-    const projectId = createId('prj');
+    let projectId = createId('prj');
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const exists = await this.db.query<{ id: string }>(`SELECT id FROM projects WHERE id = $1`, [projectId]);
+      if (exists.rowCount === 0) break;
+      projectId = createId('prj');
+    }
     const baseSlug = slugify(input.name);
     const slug = `${baseSlug}-${projectId.slice(-6)}`;
 

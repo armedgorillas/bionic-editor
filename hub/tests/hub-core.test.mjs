@@ -29,13 +29,20 @@ import { detectResumeJump } from '../dist/daemon/index.js';
 import { hashPassword, verifyPassword, LocalAuthService } from '../dist/server/auth/localAuth.js';
 
 test('Bionic Hub Core Architecture & Security Suite', async (t) => {
-  await t.test('RFC 1123 DNS-safe ULIDs and State Machine transitions (C6)', () => {
+  await t.test('RFC 1123 DNS-safe simplified IDs, legacy ULID compatibility, and State Machine transitions (C6)', () => {
     const prjId = createId('prj');
     const pubId = createId('pub');
     const runId = createId('run');
+    const usrId = createId('usr');
+    assert.ok(/^prj-[0-9a-hjkmnp-tv-z]{8}$/.test(prjId), `expected short prj id, got ${prjId}`);
+    assert.ok(/^pub-[0-9a-hjkmnp-tv-z]{8}$/.test(pubId), `expected short pub id, got ${pubId}`);
+    assert.ok(/^run-[0-9a-hjkmnp-tv-z]{8}$/.test(runId), `expected short run id, got ${runId}`);
+    assert.ok(/^usr-[0-9a-hjkmnp-tv-z]{26}$/.test(usrId), `expected full ULID usr id, got ${usrId}`);
     assert.ok(isValidPrefixedId(prjId, 'prj'));
     assert.ok(isValidPrefixedId(pubId, 'pub'));
     assert.ok(isValidPrefixedId(runId, 'run'));
+    // Legacy 26-char ULID project IDs remain valid for existing deployments
+    assert.ok(isValidPrefixedId('prj-01jdx9k3m4a7b8c9d0e1f2g3h4', 'prj'));
     assert.ok(isValidDnsLabel(prjId));
     assert.equal(prjId.includes('_'), false);
     assert.equal(isValidPrefixedId('prj_invalid_underscore', 'prj'), false);
