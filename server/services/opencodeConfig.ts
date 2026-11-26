@@ -1,7 +1,8 @@
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { modify, applyEdits, parse as parseJsonc } from 'jsonc-parser';
-import { WORKSPACE_DIR } from '../config.js';
+import { WORKSPACE_DIR, BIONIC_SHIM_URL, BIONIC_MANAGED_SKILLS_DIR } from '../config.js';
 import { atomicWriteFileSync } from './fsSafe.js';
 import { getProjectRootFile } from './workspaceConfig.js';
 import {
@@ -126,4 +127,154 @@ export function ensureOpenCodeWorkspaceConfig(): {
   }
 
   return { configPath, systemPromptPath };
+}
+
+export interface HubSyncModelSpec {
+  slug: string;
+  displayName: string;
+  protocol: 'anthropic' | 'openai' | 'google';
+  modelId: string;
+}
+
+export interface HubSyncMcpSpec {
+  slug: string;
+  transport: 'streamable_http' | 'sse' | 'stdio';
+  routing: 'hub_gateway' | 'vm_local';
+  command?: string[];
+}
+
+/**
+ * Syncs read-only Hub-managed skill symlinks into `~bionic-user/.config/opencode/skills/`
+ * (outside WORKSPACE_DIR so admin skills are never accidentally committed to project Git repos).
+ */
+export function syncManagedSkillSymlinks(
+  skillSlugs: string[],
+  managedDir: string = BIONIC_MANAGED_SKILLS_DIR
+): string[] {
+  const userSkillsRoot = path.join(os.homedir(), '.config', 'opencode', 'skills');
+  fs.mkdirSync(userSkillsRoot, { recursive: true });
+
+  const allowedSet = new Set(skillSlugs);
+  const managedPrefix = managedDir.endsWith(path.sep) ? managedDir : managedDir + path.sep;
+  // Remove stale managed symlinks pointing into managedDir
+  for (const entry of fs.readdirSync(userSkillsRoot, { withFileTypes: true })) {
+    if (!entry.isSymbolicLink()) continue;
+    const full = path.join(userSkillsRoot, entry.name);
+    try {
+      const target = fs.readlinkSync(full);
+      if (target.startsWith(managedPrefix) && !allowedSet.has(entry.name)) {
+        fs.unlinkSync(full);
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  const linked: string[] = [];
+  for (const slug of skillSlugs) {
+    if (!/^[a-z0-9-]+$/.test(slug)) continue;
+    const src = path.join(managedDir, slug);
+    if (!fs.existsSync(src)) continue;
+    const dest = path.join(userSkillsRoot, slug);
+    try {
+      if (fs.existsSync(dest) || fs.lstatSync(dest).isSymbolicLink()) {
+        fs.unlinkSync(dest);
+      }
+    } catch {}
+    fs.symlinkSync(src, dest, 'dir');
+    linked.push(slug);
+  }
+  return linked;
+}
+
+/**
+ * Updates `.opencode/opencode.jsonc` with Hub-provisioned models (pointing at
+ * bionic-daemon's localhost shim `127.0.0.1:3001/llm/{anthropic,openai,google}`)
+ * and MCP servers (pointing at `127.0.0.1:3001/mcp/<slug>` for hub_gateway).
+ */
+export function applyHubManagedOpenCodeConfig(payload: {
+  models: HubSyncModelSpec[];
+  mcpServers: HubSyncMcpSpec[];
+  skillSlugs?: string[];
+  shimUrl?: string;
+}): { configPath: string; linkedSkills: string[] } {
+  const { configPath } = ensureOpenCodeWorkspaceConfig();
+  const shim = (payload.shimUrl || BIONIC_SHIM_URL).replace(/\/+$/, '');
+  const formattingOptions = { insertSpaces: true, tabSize: 2, eol: '\n' };
+
+  let updatedText = fs.readFileSync(configPath, 'utf-8');
+  let parsed: Record<string, any> = {};
+  try {
+    parsed = parseJsonc(updatedText) || {};
+  } catch {
+    parsed = {};
+  }
+
+  const anthropicModels: Record<string, any> = {};
+  const openaiModels: Record<string, any> = {};
+  const googleModels: Record<string, any> = {};
+
+  for (const m of payload.models) {
+    const entry = { name: m.displayName };
+    if (m.protocol === 'anthropic') anthropicModels[m.slug] = entry;
+    else if (m.protocol === 'google') googleModels[m.slug] = entry;
+    else openaiModels[m.slug] = entry;
+  }
+
+  const providerBlock: Record<string, any> = {
+    ...(parsed.provider && typeof parsed.provider === 'object' ? parsed.provider : {})
+  };
+  if (Object.keys(anthropicModels).length > 0) {
+    providerBlock['bionic-anthropic'] = {
+      npm: '@ai-sdk/anthropic',
+      name: 'Bionic Hub (Anthropic / Bedrock Claude)',
+      options: { baseURL: `${shim}/llm/anthropic/v1`, apiKey: '{env:BIONIC_LOCAL_SHIM_TOKEN}' },
+      models: anthropicModels
+    };
+  }
+  if (Object.keys(openaiModels).length > 0) {
+    providerBlock['bionic-openai'] = {
+      npm: '@ai-sdk/openai-compatible',
+      name: 'Bionic Hub (OpenAI / Bedrock / Ollama)',
+      options: { baseURL: `${shim}/llm/openai/v1`, apiKey: '{env:BIONIC_LOCAL_SHIM_TOKEN}' },
+      models: openaiModels
+    };
+  }
+  if (Object.keys(googleModels).length > 0) {
+    providerBlock['bionic-google'] = {
+      npm: '@ai-sdk/google',
+      name: 'Bionic Hub (Gemini / Vertex)',
+      options: { baseURL: `${shim}/llm/google/v1beta`, apiKey: '{env:BIONIC_LOCAL_SHIM_TOKEN}' },
+      models: googleModels
+    };
+  }
+
+  updatedText = applyEdits(updatedText, modify(updatedText, ['provider'], providerBlock, { formattingOptions }));
+
+  const mcpBlock: Record<string, any> = {
+    ...(parsed.mcp && typeof parsed.mcp === 'object' ? parsed.mcp : {})
+  };
+  for (const srv of payload.mcpServers) {
+    if (srv.routing === 'hub_gateway') {
+      mcpBlock[srv.slug] = {
+        type: 'remote',
+        url: `${shim}/mcp/${srv.slug}`,
+        headers: { 'X-Bionic-Shim-Token': '{env:BIONIC_LOCAL_SHIM_TOKEN}' },
+        enabled: true
+      };
+    } else if (srv.transport === 'stdio' && srv.command && srv.command.length > 0) {
+      mcpBlock[srv.slug] = {
+        type: 'local',
+        command: srv.command,
+        enabled: true
+      };
+    }
+  }
+  updatedText = applyEdits(updatedText, modify(updatedText, ['mcp'], mcpBlock, { formattingOptions }));
+
+  if (!updatedText.endsWith('\n')) updatedText += '\n';
+  atomicWriteFileSync(configPath, updatedText);
+
+  const linkedSkills = payload.skillSlugs ? syncManagedSkillSymlinks(payload.skillSlugs) : [];
+  return { configPath, linkedSkills };
 }

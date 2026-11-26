@@ -1,0 +1,37 @@
+name: Sync Bionic Hub GitOps Config
+
+on:
+  pull_request:
+    paths: ['infra/config-examples/**']
+  push:
+    branches: ['main']
+    paths: ['infra/config-examples/**']
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build bionic-ctl
+        run: |
+          npm --prefix packages/shared ci && npm --prefix packages/shared run build
+          npm --prefix hub ci && npm --prefix hub run build
+      - name: Dry-Run Config Diff (PRs)
+        if: github.event_name == 'pull_request'
+        env:
+          BIONIC_HUB_URL: ${{ vars.BIONIC_HUB_URL }}
+          BIONIC_ADMIN_TOKEN: ${{ secrets.BIONIC_ADMIN_TOKEN }}
+        run: node hub/dist/cli/bionic-ctl.js apply --dir infra/config-examples --dry-run
+      - name: Apply Config to Bionic Hub (main)
+        if: github.event_name == 'push'
+        env:
+          BIONIC_HUB_URL: ${{ vars.BIONIC_HUB_URL }}
+          BIONIC_ADMIN_TOKEN: ${{ secrets.BIONIC_ADMIN_TOKEN }}
+        run: node hub/dist/cli/bionic-ctl.js apply --dir infra/config-examples --git-sha "${{ github.sha }}" --git-repo "${{ github.repository }}"

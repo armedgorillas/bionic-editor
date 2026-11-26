@@ -1,6 +1,15 @@
 import fs from 'fs';
 import path from 'path';
-import { WORKSPACE_DIR } from '../config.js';
+import { execFileSync, spawn } from 'child_process';
+import {
+  WORKSPACE_DIR,
+  BIONIC_HUB_MODE,
+  BIONIC_IS_FORK,
+  BIONIC_SHIM_URL,
+  BIONIC_PROJECT_ID,
+  BIONIC_LOCAL_SHIM_TOKEN,
+  getTargetSpawnOptions
+} from '../config.js';
 import {
   isPathSafe,
   resolveSafePath,
@@ -15,6 +24,7 @@ import {
   writeManifestSync,
   MANIFEST_REL_PATH
 } from './dataManifest.js';
+import { scaffoldPortableProjectScripts, upgradeManagedScriptsIfLegacy } from './portableScripts.js';
 
 export { isPathSafe, resolveSafePath, applyTargetOwnership, ensureDirWithOwnership, atomicWriteFileSync };
 
@@ -49,6 +59,7 @@ export interface FileTreeOptions {
 const ALWAYS_EXCLUDED_DIRS = new Set([
   '.venv',
   '.git',
+  'lost+found',
   'node_modules',
   '__pycache__',
   '.pytest_cache',
@@ -115,15 +126,149 @@ export function classifyFileItem(name: string, relPath: string, isDirectory: boo
   return 'other';
 }
 
+export function hydrateWorkspaceFromHubGitIfAvailable(): boolean {
+  if (!BIONIC_HUB_MODE || !BIONIC_SHIM_URL || !BIONIC_PROJECT_ID || !BIONIC_LOCAL_SHIM_TOKEN) {
+    return false;
+  }
+  const gitUrl = `${BIONIC_SHIM_URL}/git/${BIONIC_PROJECT_ID}.git`;
+  const authArg = `http.extraHeader=X-Bionic-Shim-Token: ${BIONIC_LOCAL_SHIM_TOKEN}`;
+  const spawnOpts = getTargetSpawnOptions();
+  try {
+    // Check whether the Hub project repository already has commits (e.g. forked from a Completed Module).
+    // Retry up to 45s on transient boot/attestation errors (connection refused, timeouts, 401, 5xx).
+    let heads = '';
+    const maxAttempts = BIONIC_IS_FORK ? 30 : 12;
+    let lastErr: any = null;
+    let reachedHub = false;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        heads = execFileSync('git', ['-c', authArg, 'ls-remote', '--heads', gitUrl], {
+          cwd: WORKSPACE_DIR,
+          encoding: 'utf-8',
+          timeout: 15_000,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          ...spawnOpts
+        }).trim();
+        reachedHub = true;
+        break;
+      } catch (err: any) {
+        lastErr = err;
+        const msg = String(err?.stderr || err?.message || '');
+        const isTransient =
+          /Connection refused|Failed to connect|Could not connect|timed out|ETIMEDOUT|500|502|503|504|401|empty reply|reset by peer/i.test(
+            msg
+          );
+        if (isTransient && attempt < maxAttempts - 1) {
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1500);
+          continue;
+        }
+        break;
+      }
+    }
+
+    if (!reachedHub) {
+      const errMsg = String(lastErr?.stderr || lastErr?.message || 'unknown error');
+      if (BIONIC_IS_FORK) {
+        // NEVER poison a forked VM disk with the generic starter template — exit non-zero so systemd retries!
+        console.error(
+          `[workspace] Forked project ${BIONIC_PROJECT_ID} could not reach Hub Git (${errMsg}); exiting so systemd retries hydration.`
+        );
+        process.exit(1);
+      }
+      console.warn(`[workspace] Could not reach Hub Git (${BIONIC_PROJECT_ID}): ${errMsg}`);
+      return false;
+    }
+
+    if (!heads) {
+      return false;
+    }
+
+    // Parse exact branch ref from ls-remote (`refs/heads/main` preferred, else first branch ref)
+    const refLines = heads
+      .split('\n')
+      .map((l) => l.trim().split(/\s+/)[1])
+      .filter(Boolean);
+    const targetRef = refLines.includes('refs/heads/main') ? 'refs/heads/main' : refLines[0];
+    if (!targetRef) {
+      return false;
+    }
+
+    if (!fs.existsSync(path.join(WORKSPACE_DIR, '.git'))) {
+      execFileSync('git', ['init', '-b', 'main'], {
+        cwd: WORKSPACE_DIR,
+        timeout: 10_000,
+        stdio: 'pipe',
+        ...spawnOpts
+      });
+    }
+    execFileSync('git', ['-c', authArg, 'fetch', gitUrl, targetRef], {
+      cwd: WORKSPACE_DIR,
+      timeout: 60_000,
+      stdio: 'pipe',
+      ...spawnOpts
+    });
+    execFileSync('git', ['reset', '--hard', 'FETCH_HEAD'], {
+      cwd: WORKSPACE_DIR,
+      timeout: 15_000,
+      stdio: 'pipe',
+      ...spawnOpts
+    });
+
+    // Post-hydration hygiene: ensure .gitignore, portable scripts, and executable permissions
+    ensureDataGitignore();
+    scaffoldPortableProjectScripts(WORKSPACE_DIR);
+    upgradeManagedScriptsIfLegacy(WORKSPACE_DIR);
+
+    const scriptsDir = path.join(WORKSPACE_DIR, 'scripts');
+    if (fs.existsSync(scriptsDir)) {
+      for (const f of fs.readdirSync(scriptsDir)) {
+        if (f.endsWith('.sh')) {
+          try { fs.chmodSync(path.join(scriptsDir, f), 0o755); } catch {}
+        }
+      }
+      const dataPull = path.join(scriptsDir, 'data-pull.sh');
+      if (fs.existsSync(dataPull) && fs.existsSync(path.join(WORKSPACE_DIR, 'data', 'manifest.json'))) {
+        try {
+          const child = spawn('bash', [dataPull], {
+            cwd: WORKSPACE_DIR,
+            detached: true,
+            stdio: 'ignore',
+            ...spawnOpts
+          });
+          child.unref();
+        } catch {}
+      }
+    }
+    console.log(`📦 Hydrated forked workspace from Hub Git repository (${BIONIC_PROJECT_ID}, ref=${targetRef})`);
+    return true;
+  } catch (err: any) {
+    if (BIONIC_IS_FORK) {
+      console.error(
+        `[workspace] Forked project ${BIONIC_PROJECT_ID} hydration failed (${err.message || err}); exiting so systemd retries.`
+      );
+      process.exit(1);
+    }
+    console.warn(`[workspace] Could not hydrate from Hub Git (${BIONIC_PROJECT_ID}): ${err.message || err}`);
+    return false;
+  }
+}
+
 export function ensureWorkspaceDir(): void {
   if (!fs.existsSync(WORKSPACE_DIR)) {
     ensureDirWithOwnership(WORKSPACE_DIR);
-    initDefaultTemplate();
-  } else {
-    // If workspace exists but is empty, scaffold default template
-    const entries = fs.readdirSync(WORKSPACE_DIR);
-    if (entries.length === 0 || (entries.length === 1 && entries[0] === '.git')) {
+    if (!hydrateWorkspaceFromHubGitIfAvailable()) {
       initDefaultTemplate();
+    }
+  } else {
+    // If workspace exists but contains only filesystem/git metadata (e.g. ext4 `lost+found`, `.git`),
+    // first check Hub Git (for forked modules), otherwise scaffold default template.
+    const entries = fs.readdirSync(WORKSPACE_DIR).filter((e) => e !== '.git' && e !== 'lost+found');
+    if (entries.length === 0) {
+      if (!hydrateWorkspaceFromHubGitIfAvailable()) {
+        initDefaultTemplate();
+      }
+    } else if (BIONIC_HUB_MODE) {
+      upgradeManagedScriptsIfLegacy(WORKSPACE_DIR);
     }
   }
 }
@@ -230,6 +375,9 @@ scipy>=1.10.0
   if (!fs.existsSync(manifestPath)) {
     writeManifestSync(createEmptyManifest());
   }
+
+  // Scaffold portable, zero-lock-in bash workflow scripts (scripts/*.sh + bionic.yaml)
+  scaffoldPortableProjectScripts(WORKSPACE_DIR);
 }
 
 export function getFileTree(

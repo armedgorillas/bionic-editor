@@ -1,0 +1,24 @@
+# Locked-down public website interactive sandbox container (Security H7)
+# Runs Bionic Editor in BIONIC_SANDBOX_MODE=true with:
+# - Non-root user, immutable root-owned seed copied cleanly to tmpfs on start
+# - Zero shell/Python/OpenCode execution & zero file mutations
+FROM node:22-slim
+
+WORKDIR /opt/bioniceditor
+COPY package.json package-lock.json ./
+COPY dist-server ./dist-server
+COPY client/dist ./client/dist
+COPY bin ./bin
+COPY examples/demo-rnaseq-project /opt/demo-seed
+
+RUN npm ci --omit=dev && useradd -m sandboxuser && chmod -R a+rX /opt/demo-seed
+USER sandboxuser
+
+ENV NODE_ENV=production
+ENV BIONIC_SANDBOX_MODE=true
+ENV PORT=3000
+ENV HOST=0.0.0.0
+ENV WORKSPACE_DIR=/tmp/demo-workspace
+
+EXPOSE 3000
+CMD ["sh", "-c", "rm -rf /tmp/demo-workspace && cp -R /opt/demo-seed /tmp/demo-workspace && exec node /opt/bioniceditor/dist-server/index.js --workspace /tmp/demo-workspace"]

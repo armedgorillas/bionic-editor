@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Bionic Editor | Scientific AI Workspace by Right Bionic</title>
+    <meta
+      name="description"
+      content="Bionic Editor is software that scientists use to direct AI agents to accomplish reproducible scientific tasks — with enterprise sandboxing and internal sharing via Bionic Hub."
+    />
+    <link rel="canonical" href="https://editor.rightbionic.com/" />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://editor.rightbionic.com/" />
+    <meta property="og:title" content="Bionic Editor — Scientific AI Workspace" />
+    <meta
+      property="og:description"
+      content="Write analysis plans like a scientist; let AI agents write the reproducible code, verify outputs, and publish interactive dashboards."
+    />
+    <meta property="og:image" content="https://editor.rightbionic.com/images/image1.png" />
+    <link rel="icon" type="image/png" href="images/logo.png" />
+    <link rel="apple-touch-icon" href="images/logo.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <!-- Dark mode inline script (matches rightbionic.com to prevent FOUC) -->
+    <script>
+      if (
+        localStorage.getItem('color-theme') === 'dark' ||
+        (!('color-theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)
+      ) {
+        document.documentElement.classList.add('dark');
+      } else {
+        document.documentElement.classList.remove('dark');
+      }
+    </script>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="site-header">
+        <div class="brand-group">
+          <a href="#overview" class="brand-logo-link" aria-label="Bionic Editor Home">
+            <img src="images/logo.png" alt="Bionic Editor logo" class="brand-logo" />
+          </a>
+          <div>
+            <div class="brand-title"><a href="#overview">Bionic Editor</a></div>
+            <p class="brand-subtitle">by Right Bionic · Scientific AI Workspace</p>
+          </div>
+        </div>
+
+        <div class="header-controls">
+          <nav class="main-nav" aria-label="Main navigation">
+            <ul>
+              <li><a href="#features">Features</a></li>
+              <li><a href="#users">Who It&rsquo;s For</a></li>
+              <li><a href="#access">Private Beta</a></li>
+              <li><a href="https://rightbionic.com" class="nav-accent">Right Bionic &rarr;</a></li>
+            </ul>
+          </nav>
+
+          <button id="theme-toggle" type="button" class="theme-toggle" aria-label="Toggle dark mode">
+            <svg id="theme-toggle-dark-icon" class="hidden" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true">
+              <path d="M17.293 13.293A8 8 0 016.707 2.707a8.001 8.001 0 1010.586 10.586z"></path>
+            </svg>
+            <svg id="theme-toggle-light-icon" class="hidden" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true">
+              <path
+                fill-rule="evenodd"
+                clip-rule="evenodd"
+                d="M10 2a1 1 0 011 1v1a1 1 0 11-2 0V3a1 1 0 011-1zm4 8a4 4 0 11-8 0 4 4 0 018 0zm-.464 4.95l.707.707a1 1 0 001.414-1.414l-.707-.707a1 1 0 00-1.414 1.414zm2.12-10.607a1 1 0 010 1.414l-.706.707a1 1 0 11-1.414-1.414l.707-.707a1 1 0 011.414 0zM17 11a1 1 0 100-2h-1a1 1 0 100 2h1zm-7 4a1 1 0 011 1v1a1 1 0 11-2 0v-1a1 1 0 011-1zM5.05 6.464A1 1 0 106.465 5.05l-.708-.707a1 1 0 00-1.414 1.414l.707.707zm1.414 8.486l-.707.707a1 1 0 01-1.414-1.414l.707-.707a1 1 0 011.414 1.414zM4 11a1 1 0 100-2H3a1 1 0 000 2h1z"
+              ></path>
+            </svg>
+          </button>
+        </div>
+      </header>
+
+      <main class="layout-grid">
+        <div class="content-column">
+          <!-- Hero / Overview -->
+          <section class="section-block" id="overview">
+            <div class="beta-pill">
+              <span class="beta-dot" aria-hidden="true"></span>
+              <span>Private Beta · Bionic Editor &amp; Bionic Hub</span>
+            </div>
+            <h1 class="hero-title">Where scientists can use AI.</h1>
+            <p class="hero-lead">
+              Bionic Editor is software that scientists can use to direct AI agents to accomplish scientific tasks.
+              Write plain-English analysis plans, let agents build durable, reproducible code and interactive web
+              reports, and manage enterprise sandboxing with Bionic Hub.
+            </p>
+
+            <div class="action-row">
+              <a href="mailto:info@rightbionic.com?subject=Bionic%20Editor%20Private%20Beta%20Access" class="btn-primary">
+                Request Beta Access &rarr;
+              </a>
+              <a href="#features" class="btn-secondary">Explore Features</a>
+            </div>
+          </section>
+
+          <!-- Features -->
+          <section class="section-block" id="features">
+            <h2>Features</h2>
+
+            <article class="feature-block" id="analysis-plans">
+              <h3 class="first-sub">Write analysis plans like a scientist; AI can do the coding</h3>
+              <p>
+                The Bionic Editor allows users to direct AI agents by writing thorough analysis plans instead of chat,
+                where context can get lost and no one can track how the final work was created.
+              </p>
+              <p>
+                The Bionic Editor has agents implement users&rsquo; plans using durable, reproducible code, saving
+                datasets along the way. This ensures your work is reproducible while not requiring non-coders to do
+                anything with a command line.
+              </p>
+              <figure class="screenshot-figure">
+                <div class="screenshot-frame" data-lightbox>
+                  <img
+                    src="images/image1.png"
+                    alt="Bionic Editor showing an AlphaFold analysis plan in PLAN.md front-and-center with the workspace file tree on the left and the AI Agent panel on the right"
+                  />
+                </div>
+                <figcaption class="screenshot-caption">
+                  The primary user interface for science should be a document defining the goals and approach to
+                  research instead of chat. The Bionic Editor puts this front-and-center with chat off to the side.
+                </figcaption>
+              </figure>
+            </article>
+
+            <article class="feature-block" id="good-science">
+              <h3>Good science, pre-baked</h3>
+              <p>
+                In addition to being a text editor, we provide templates for starting a number of scientific tasks so
+                that the agents closely adhere to the scientific method. Some of these direct the agent to work in a
+                certain way; others direct the <em>user</em> to work in a certain way, like writing tests up front.
+              </p>
+              <figure class="screenshot-figure">
+                <div class="screenshot-frame" data-lightbox>
+                  <img
+                    src="images/image3.png"
+                    alt="Bionic Editor RESULTS.md displaying a Scientific Validation Verification table with passing automated checks defined in PLAN.md"
+                  />
+                </div>
+                <figcaption class="screenshot-caption">
+                  Our system prompts <em>users</em> to think up front about how they should verify agent output.
+                  Everything the agent does is saved under the <code>code/</code> folder, which the user can look at or
+                  not.
+                </figcaption>
+              </figure>
+            </article>
+
+            <article class="feature-block" id="share-work">
+              <h3>Share work with scientific teams</h3>
+              <p>
+                Publish and version datasets and results. By default, the Bionic Editor creates interactive dashboards
+                using JavaScript that runs natively in the browser. Don&rsquo;t know what that means? You don&rsquo;t
+                have to; the result will be interactive.
+              </p>
+              <figure class="screenshot-figure">
+                <div class="screenshot-frame" data-lightbox>
+                  <img
+                    src="images/image2.png"
+                    alt="Bionic Editor Live Web Report showing an interactive 3D molecular structure viewer with AlphaFold pLDDT confidence coloring and Publish controls"
+                  />
+                </div>
+                <figcaption class="screenshot-caption">
+                  All user work is published as a self-contained website, and the Bionic Hub provides a private area to
+                  view, share, and explore interactive data.
+                </figcaption>
+              </figure>
+            </article>
+
+            <article class="feature-block" id="industry-teams">
+              <h3>Made for industry science and teams</h3>
+              <p>
+                Information security and sandboxing are first-class features in the Bionic Editor, so IT admins
+                don&rsquo;t have to worry about users installing coding harnesses on their laptops. Admins can provision
+                service account permissions, machine templates, API keys, and model providers centrally.
+              </p>
+              <figure class="screenshot-figure">
+                <div class="screenshot-frame" data-lightbox>
+                  <img
+                    src="images/image4.png"
+                    alt="Bionic Hub Admin console displaying VM Image Templates, Configured Models including AWS Bedrock and Gemini, Managed Skills, and MCP Server Connections"
+                  />
+                </div>
+                <figcaption class="screenshot-caption">
+                  IT administrators can configure templates for virtual agent sandboxes, specifying enterprise
+                  permissions granted to the agents and which models are allowed.
+                </figcaption>
+              </figure>
+            </article>
+          </section>
+
+          <!-- Users / Audiences -->
+          <section class="section-block" id="users">
+            <h2>Built for Every Part of Your R&amp;D Organization</h2>
+
+            <div class="audience-block" id="scientists">
+              <div class="audience-eyebrow">End Users</div>
+              <h3>Scientists</h3>
+              <p>
+                Scientists are highly analytical professionals, but they aren&rsquo;t necessarily coders. So how do we
+                give scientists all the power of the latest models for scientific research without starting with
+                &ldquo;open the command line and <code>curl -L https://...</code>&rdquo;?
+              </p>
+              <p>
+                The Bionic Editor has all the capabilities of a coding environment, but presents them in a way
+                scientists are accustomed to. In the Bionic Editor, scientists direct agents using an analysis plan: a
+                plain-English document that specifies the project aims, data, analysis, and tests. Then, the AI agent
+                implements it as code, ensuring that the work follows best practices for reproducible research.
+              </p>
+              <p>
+                The scientific user sees an analysis plan written in plain English and the resulting data as images or
+                an interactive dashboard. Underneath, the agent maintains all the code, instructions, and data so that
+                the work is fully inspectable and reproducible by another Bionic Editor user or a coder with their own
+                tooling.
+              </p>
+            </div>
+
+            <div class="audience-block" id="it-admins">
+              <div class="audience-eyebrow">Security &amp; Infrastructure</div>
+              <h3>IT &amp; Informatics Teams</h3>
+              <p>
+                Your scientists are asking you to let them download AI coding harnesses that keep asking for filesystem
+                permissions and their passwords. You can see the potential risks immediately. However, if you restrict
+                access to coding harnesses on security grounds, your scientists won&rsquo;t capture the value from your
+                AI enablement efforts. They need something beyond consumer chat apps that doesn&rsquo;t require
+                knowledge of POSIX file permissions and API key handling.
+              </p>
+              <p>
+                The Bionic <em>Hub</em> is an application to manage and provision AI sandboxes with a UI that scientists
+                feel comfortable using. Bionic Hub isolates running agents into separate virtual machines and allows IT
+                admins to specify access to company resources at the service account level, so users never provide their
+                own credentials. It also lets IT admins bake corporate policy into system prompts, manage API keys
+                centrally, and route to models hosted on AWS Bedrock or other enterprise endpoints.
+              </p>
+              <p>
+                Just as importantly, <em>it includes an internal publication option</em> so scientists can share
+                interactive reports with their teams without accidentally publishing proprietary work to the public
+                internet.
+              </p>
+            </div>
+
+            <div class="audience-block" id="data-management">
+              <div class="audience-eyebrow">FAIR Data Stewardship</div>
+              <h3>Data Management Professionals</h3>
+              <p>
+                There are well-established best practices to make data FAIR (Findable, Accessible, Interoperable,
+                Reusable), a widely adopted framework for scientific data management. If you are a data management
+                professional within a life science organization, you likely have goals around organized, reusable data.
+                However, following these practices requires extra time and effort on top of a scientist&rsquo;s daily
+                responsibilities, so data management tasks often take a back seat.
+              </p>
+              <p>
+                What if scientists could focus on their primary goal &mdash; scientific insight &mdash; and AI could
+                organize and document the data as they go along? That&rsquo;s what the Bionic Editor does. We&rsquo;ve
+                baked into the agent system best practices for data provenance, manifests, and reproducible research
+                learned from decades of supporting industry scientists.
+              </p>
+            </div>
+          </section>
+
+          <!-- Private Beta Access -->
+          <section class="section-block" id="access">
+            <h2>Request Access</h2>
+            <div class="access-card">
+              <div class="access-card-body">
+                <div class="access-card-label">Private Beta</div>
+                <p>
+                  The Bionic Editor and Bionic Hub are in private beta. Email
+                  <a href="mailto:info@rightbionic.com">info@rightbionic.com</a> to discuss your use case and gain
+                  access. I will need to talk to you to ensure you are human.
+                </p>
+              </div>
+              <div class="access-card-cta">
+                <a
+                  href="mailto:info@rightbionic.com?subject=Bionic%20Editor%20Private%20Beta%20Access"
+                  class="btn-primary"
+                >
+                  info@rightbionic.com
+                </a>
+                <span class="access-meta">Based in Boston, MA · editor.rightbionic.com</span>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <!-- Sticky "On this page" TOC matching rightbionic.com -->
+        <aside class="toc-sidebar" aria-label="On this page">
+          <div class="toc-heading">On this page</div>
+          <ul class="toc-list">
+            <li><a href="#overview">Overview</a></li>
+            <li>
+              <a href="#features">Features</a>
+              <ul class="toc-sublist">
+                <li><a href="#analysis-plans">Analysis Plans</a></li>
+                <li><a href="#good-science">Good Science, Pre-Baked</a></li>
+                <li><a href="#share-work">Share with Teams</a></li>
+                <li><a href="#industry-teams">Enterprise Security</a></li>
+              </ul>
+            </li>
+            <li>
+              <a href="#users">Who It&rsquo;s For</a>
+              <ul class="toc-sublist">
+                <li><a href="#scientists">Scientists</a></li>
+                <li><a href="#it-admins">IT &amp; Informatics</a></li>
+                <li><a href="#data-management">Data Management</a></li>
+              </ul>
+            </li>
+            <li><a href="#access">Private Beta Access</a></li>
+          </ul>
+        </aside>
+      </main>
+
+      <footer class="site-footer">
+        <p>&copy; <span id="year"></span> Right Bionic. All rights reserved.</p>
+        <div class="footer-links">
+          <a href="https://rightbionic.com">rightbionic.com</a>
+          <a href="mailto:info@rightbionic.com">info@rightbionic.com</a>
+        </div>
+      </footer>
+    </div>
+
+    <!-- Click-to-zoom screenshot lightbox -->
+    <div id="lightbox" class="lightbox hidden" role="dialog" aria-modal="true" aria-label="Screenshot preview">
+      <button id="lightbox-close" type="button" class="lightbox-close" aria-label="Close preview">ESC</button>
+      <div class="lightbox-inner">
+        <img id="lightbox-img" src="" alt="" />
+        <p id="lightbox-caption" class="lightbox-caption"></p>
+      </div>
+    </div>
+
+    <script>
+      (function () {
+        // Year
+        var yearEl = document.getElementById('year');
+        if (yearEl) yearEl.textContent = String(new Date().getFullYear());
+
+        // Theme toggle (matches rightbionic.com localStorage key)
+        var darkIcon = document.getElementById('theme-toggle-dark-icon');
+        var lightIcon = document.getElementById('theme-toggle-light-icon');
+        var toggleBtn = document.getElementById('theme-toggle');
+
+        function syncIcons() {
+          var isDark = document.documentElement.classList.contains('dark');
+          if (darkIcon && lightIcon) {
+            darkIcon.classList.toggle('hidden', isDark);
+            lightIcon.classList.toggle('hidden', !isDark);
+          }
+        }
+        syncIcons();
+
+        if (toggleBtn) {
+          toggleBtn.addEventListener('click', function () {
+            var nextDark = !document.documentElement.classList.contains('dark');
+            document.documentElement.classList.toggle('dark', nextDark);
+            localStorage.setItem('color-theme', nextDark ? 'dark' : 'light');
+            syncIcons();
+          });
+        }
+
+        // Screenshot lightbox
+        var lightbox = document.getElementById('lightbox');
+        var lightboxImg = document.getElementById('lightbox-img');
+        var lightboxCaption = document.getElementById('lightbox-caption');
+        var closeBtn = document.getElementById('lightbox-close');
+
+        function closeLightbox() {
+          if (lightbox) lightbox.classList.add('hidden');
+        }
+
+        document.querySelectorAll('[data-lightbox]').forEach(function (frame) {
+          frame.addEventListener('click', function () {
+            var img = frame.querySelector('img');
+            var figure = frame.closest('figure');
+            var cap = figure ? figure.querySelector('figcaption') : null;
+            if (!img || !lightbox || !lightboxImg) return;
+            lightboxImg.src = img.src;
+            lightboxImg.alt = img.alt;
+            if (lightboxCaption) lightboxCaption.textContent = cap ? cap.textContent.trim() : img.alt;
+            lightbox.classList.remove('hidden');
+          });
+        });
+
+        if (lightbox) {
+          lightbox.addEventListener('click', function (e) {
+            if (e.target === lightbox || e.target === closeBtn) closeLightbox();
+          });
+        }
+        document.addEventListener('keydown', function (e) {
+          if (e.key === 'Escape') closeLightbox();
+        });
+
+        // Subtle active-link tracking in "On this page" sidebar
+        var tocLinks = Array.prototype.slice.call(document.querySelectorAll('.toc-list a'));
+        var targets = tocLinks
+          .map(function (a) {
+            var id = a.getAttribute('href').slice(1);
+            return { link: a, el: document.getElementById(id) };
+          })
+          .filter(function (item) {
+            return Boolean(item.el);
+          });
+
+        if ('IntersectionObserver' in window && targets.length > 0) {
+          var observer = new IntersectionObserver(
+            function (entries) {
+              entries.forEach(function (entry) {
+                if (entry.isIntersecting) {
+                  tocLinks.forEach(function (l) {
+                    l.classList.remove('active');
+                  });
+                  var match = targets.find(function (t) {
+                    return t.el === entry.target;
+                  });
+                  if (match) match.link.classList.add('active');
+                }
+              });
+            },
+            { rootMargin: '-15% 0px -70% 0px' }
+          );
+          targets.forEach(function (t) {
+            observer.observe(t.el);
+          });
+        }
+      })();
+    </script>
+  </body>
+</html>

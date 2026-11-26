@@ -9,7 +9,11 @@ import {
   ANTHROPIC_API_KEY,
   GEMINI_API_KEY,
   OLLAMA_BASE_URL,
-  WORKSPACE_DIR
+  WORKSPACE_DIR,
+  BIONIC_HUB_MODE,
+  BIONIC_SANDBOX_MODE,
+  BIONIC_SHIM_URL,
+  BIONIC_LOCAL_SHIM_TOKEN
 } from '../config.js';
 import { readFileContent, writeFileContent, getFileTree, resolveSafePath } from './workspace.js';
 import { runPythonScript, runBashCommand } from './venv.js';
@@ -186,6 +190,9 @@ export async function executeToolDetailed(name: string, args: any, sessionId?: s
         };
       }
       case 'run_python': {
+        if (BIONIC_SANDBOX_MODE) {
+          return { output: 'Code execution is disabled in Bionic Sandbox Mode.', isError: true };
+        }
         const res = await runPythonScript(args.script_path, args.args || [], undefined, sessionId);
         const output = [
           `Exit code: ${res.code}`,
@@ -199,6 +206,9 @@ export async function executeToolDetailed(name: string, args: any, sessionId?: s
         };
       }
       case 'run_command': {
+        if (BIONIC_SANDBOX_MODE) {
+          return { output: 'Shell execution is disabled in Bionic Sandbox Mode.', isError: true };
+        }
         const res = await runBashCommand(args.command, undefined, sessionId);
         const output = [
           `Exit code: ${res.code}`,
@@ -284,48 +294,62 @@ export async function runAgentConversation(
   }
 
   try {
-    if (config.provider === 'demo') {
+    // In Hub Mode, never honor client-supplied apiKey or baseUrl overrides
+    const effectiveConfig: AgentConfig = BIONIC_HUB_MODE
+      ? { ...config, apiKey: undefined, baseUrl: undefined }
+      : config;
+
+    if (effectiveConfig.provider === 'demo') {
       return await handleDemoAgent(messages, onEvent);
     }
 
-    // Use Bionic-managed OpenCode V2 server bridge when available!
-    const opencodeBin = getOpenCodeBinary();
+    // Security H7: Never launch OpenCode subprocesses in public sandbox mode
+    const opencodeBin = BIONIC_SANDBOX_MODE ? null : getOpenCodeBinary();
     if (opencodeBin && process.env.USE_OPENCODE !== 'false') {
-      return await runOpenCodeAgent(messages, config, onEvent);
+      return await runOpenCodeAgent(messages, effectiveConfig, onEvent);
     }
 
-    if (config.provider === 'gemini') {
-      const key = config.apiKey || GEMINI_API_KEY;
+    // In Hub Mode fallback (when OpenCode isn't installed), route through bionic-daemon localhost shim
+    if (BIONIC_HUB_MODE) {
+      const shimClient = new OpenAI({
+        apiKey: BIONIC_LOCAL_SHIM_TOKEN || 'hub-shim',
+        baseURL: `${BIONIC_SHIM_URL}/llm/openai/v1`
+      });
+      return await runOpenAILoop(shimClient, effectiveConfig.model || 'default', messages, effectiveConfig, onEvent);
+    }
+
+    if (effectiveConfig.provider === 'gemini') {
+      const key = effectiveConfig.apiKey || GEMINI_API_KEY;
       if (!key) {
         throw new Error(
           'Google Gemini API key required. Please click the ⚙ Settings icon in the top right of the Agent panel and enter your Gemini API key.'
         );
       }
-      return await handleGeminiAgent(messages, config, onEvent);
+      return await handleGeminiAgent(messages, effectiveConfig, onEvent);
     }
 
-    if (config.provider === 'openai') {
-      const key = config.apiKey || OPENAI_API_KEY;
+    if (effectiveConfig.provider === 'openai') {
+      const key = effectiveConfig.apiKey || OPENAI_API_KEY;
       if (!key) {
         throw new Error(
           'OpenAI API key required. Please click the ⚙ Settings icon in the top right of the Agent panel and enter your OpenAI API key.'
         );
       }
-      return await handleOpenAIAgent(messages, config, onEvent);
+      return await handleOpenAIAgent(messages, effectiveConfig, onEvent);
     }
 
-    if (config.provider === 'anthropic') {
-      const key = config.apiKey || ANTHROPIC_API_KEY;
+    if (effectiveConfig.provider === 'anthropic') {
+      const key = effectiveConfig.apiKey || ANTHROPIC_API_KEY;
       if (!key) {
         throw new Error(
           'Anthropic API key required. Please click the ⚙ Settings icon in the top right of the Agent panel and enter your Anthropic API key.'
         );
       }
-      return await handleAnthropicAgent(messages, config, onEvent);
+      return await handleAnthropicAgent(messages, effectiveConfig, onEvent);
     }
 
-    if (config.provider === 'ollama') {
-      return await handleOpenAIAgent(messages, config, onEvent);
+    if (effectiveConfig.provider === 'ollama') {
+      return await handleOpenAIAgent(messages, effectiveConfig, onEvent);
     }
 
     return await handleDemoAgent(messages, onEvent);
@@ -367,6 +391,20 @@ async function handleDemoAgent(
     await new Promise(r => setTimeout(r, 300));
 
     if (candidateScript) {
+      // Security H7: Never execute workspace Python scripts in public sandbox mode
+      if (BIONIC_SANDBOX_MODE) {
+        onEvent({
+          type: 'step_done',
+          title: `Inspected ${candidateScript} (Sandbox Mode)`,
+          description: 'Code execution is disabled in the public interactive sandbox. Showing pre-computed results instead.'
+        });
+        const reply =
+          `- Inspected \`${candidateScript}\` (live code execution is disabled in the public sandbox).\n` +
+          `- Explore the pre-computed interactive dashboard in **Web Report** (\`web-report/index.html\`) and scientific test results in \`tests/scientific/\`.\n` +
+          `- Sign in to Bionic Hub with an authorized account to run live analyses on dedicated cloud VMs.`;
+        return { text: reply, tokens };
+      }
+
       const toolResult = await executeTool('run_python', { script_path: candidateScript });
       onEvent({
         type: 'step_done',

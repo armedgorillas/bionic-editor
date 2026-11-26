@@ -1,0 +1,11 @@
+.git
+node_modules
+**/node_modules
+**/.terraform
+*.tgz
+dist-release
+hub/dist
+hub/client/dist
+packages/shared/dist
+.env
+.env.*

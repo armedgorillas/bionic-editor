@@ -1,6 +1,9 @@
+import crypto from 'crypto';
 import http from 'http';
 import path from 'path';
 import fs from 'fs';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import express from 'express';
 import cors from 'cors';
 import { WebSocketServer, WebSocket } from 'ws';
@@ -15,7 +18,17 @@ import {
   ANTHROPIC_API_KEY,
   GEMINI_API_KEY,
   updateConfigKeys,
-  BASE_URL
+  BASE_URL,
+  BIONIC_HUB_MODE,
+  BIONIC_SANDBOX_MODE,
+  BIONIC_HUB_URL,
+  BIONIC_PROJECT_ID,
+  BIONIC_SHIM_URL,
+  BIONIC_LOCAL_SHIM_TOKEN,
+  BIONIC_DAEMON_TOKEN,
+  BIONIC_UNIX_SOCKET,
+  BIONIC_REPORTS_ORIGIN,
+  getTargetSpawnOptions
 } from './config.js';
 import {
   ensureWorkspaceDir,
@@ -36,13 +49,14 @@ import {
   updateWorkspaceConfig
 } from './services/workspaceConfig.js';
 import { readUserInstructions, writeUserInstructions } from './services/agentPrompt.js';
-import { refreshManagedSystemPrompt } from './services/opencodeConfig.js';
+import { refreshManagedSystemPrompt, applyHubManagedOpenCodeConfig } from './services/opencodeConfig.js';
 import {
   isSensitiveEnvPath
 } from './services/fsSafe.js';
 import {
   getManifestSummary,
   registerDataFile,
+  registerRemoteDataEntry,
   verifyManifest,
   removeManifestEntry,
   untrackRawFromGit,
@@ -50,9 +64,13 @@ import {
   updateManifestFilepath,
   readManifest,
   syncManifestArtifacts,
+  syncRawDataDirectoryToManifest,
+  refreshDerivedManifestMirrors,
+  ensureDataGitignore,
   wasManifestWrittenInternallyRecently,
   MANIFEST_REL_PATH
 } from './services/dataManifest.js';
+import { scaffoldPortableProjectScripts, upgradeManagedScriptsIfLegacy } from './services/portableScripts.js';
 import {
   getVenvStatus,
   createVenv,
@@ -105,9 +123,23 @@ server.on('connection', (socket) => {
   });
 });
 
-app.use(cors());
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+const execFileAsync = promisify(execFile);
+
+// Activity telemetry tracked for Hub idle detection
+let lastUserActivityAt = Date.now();
+let activeAgentTurns = 0;
+
+if (!BIONIC_HUB_MODE) {
+  app.use(cors());
+}
+app.use(express.json({ limit: BIONIC_HUB_MODE ? '25mb' : '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: BIONIC_HUB_MODE ? '25mb' : '50mb' }));
+app.use((req, _res, next) => {
+  if (!req.path.startsWith('/api/hub-local') && !req.path.includes('/health')) {
+    lastUserActivityAt = Date.now();
+  }
+  next();
+});
 
 // WebSocket client set & broadcast helper
 interface ExtWebSocket extends WebSocket {
@@ -136,12 +168,23 @@ opencodeServer.setBroadcast((evt) => {
 });
 
 // Hardened Multer upload config (sanitizes filename + blocks escaping symlinks + caps size)
-const MAX_UPLOAD_BYTES = parseInt(process.env.MAX_UPLOAD_MB || '500', 10) * 1024 * 1024;
+// In Hub Mode, cap at 25 MB and reject data/raw/* (large files must use Hub GCS resumable upload)
+const DEFAULT_MAX_UPLOAD_MB = BIONIC_HUB_MODE ? '25' : '500';
+const MAX_UPLOAD_BYTES = parseInt(process.env.MAX_UPLOAD_MB || DEFAULT_MAX_UPLOAD_MB, 10) * 1024 * 1024;
 const storage = multer.diskStorage({
   destination: (req, _file, cb) => {
     try {
-      const targetDir = req.query.dir ? String(req.query.dir) : '';
+      const targetDir = req.query.dir ? String(req.query.dir).replace(/^\/+/, '') : '';
       const safeTarget = targetDir ? resolveSafePath(targetDir) : WORKSPACE_DIR;
+      if (BIONIC_HUB_MODE) {
+        const canonicalRel = path.relative(path.resolve(WORKSPACE_DIR), safeTarget).replace(/\\/g, '/');
+        if (canonicalRel === 'data/raw' || canonicalRel.startsWith('data/raw/')) {
+          return cb(
+            new Error('Direct uploads to data/raw/ are disabled in Hub Mode; use Hub GCS Resumable Upload instead.'),
+            WORKSPACE_DIR
+          );
+        }
+      }
       ensureDirWithOwnership(safeTarget);
       cb(null, safeTarget);
     } catch (err: any) {
@@ -166,14 +209,47 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage, limits: { fileSize: MAX_UPLOAD_BYTES } });
 
-// Web Report static server - direct single-port serving
+// Web Report static server — in Hub Mode with isolated reports origin, block same-origin /report
 const webReportDir = path.join(WORKSPACE_DIR, 'web-report');
-app.use('/report', express.static(webReportDir));
-if (BASE_URL) {
-  app.use(`${BASE_URL}/report`, express.static(webReportDir));
+const blockSameOriginReport: express.RequestHandler = (_req, res) => {
+  res.status(403).json({
+    error: 'Same-origin /report is disabled in Hub Mode for XSS isolation.',
+    reportsOrigin: BIONIC_REPORTS_ORIGIN
+  });
+};
+if (BIONIC_HUB_MODE && BIONIC_REPORTS_ORIGIN) {
+  app.use('/report', blockSameOriginReport);
+  if (BASE_URL) {
+    app.use(`${BASE_URL}/report`, blockSameOriginReport);
+  }
+} else {
+  app.use('/report', express.static(webReportDir));
+  if (BASE_URL) {
+    app.use(`${BASE_URL}/report`, express.static(webReportDir));
+  }
 }
 
 const apiRouter = express.Router();
+
+// Security guard for Sandbox Mode (blocks code execution AND workspace/file mutations for anonymous demo visitors)
+const rejectInSandbox: express.RequestHandler = (_req, res, next) => {
+  if (BIONIC_SANDBOX_MODE) {
+    return res.status(403).json({ error: 'This operation is disabled in public Sandbox Mode.' });
+  }
+  next();
+};
+
+// Security #2: Authenticate /api/hub-local/* strictly via daemon-only X-Bionic-Daemon-Token
+const requireDaemonToken: express.RequestHandler = (req, res, next) => {
+  if (!BIONIC_HUB_MODE || !BIONIC_DAEMON_TOKEN) return next();
+  const provided = String(req.headers['x-bionic-daemon-token'] || '');
+  const expectedBuf = Buffer.from(BIONIC_DAEMON_TOKEN, 'utf-8');
+  const providedBuf = Buffer.from(provided, 'utf-8');
+  if (expectedBuf.length !== providedBuf.length || !crypto.timingSafeEqual(expectedBuf, providedBuf)) {
+    return res.status(403).json({ error: 'Forbidden: daemon token required' });
+  }
+  next();
+};
 
 // Workspace info & dynamic configuration (Feature 7)
 apiRouter.get('/workspace/info', (_req, res) => {
@@ -196,7 +272,7 @@ apiRouter.get('/workspace/config', (_req, res) => {
   }
 });
 
-apiRouter.put('/workspace/config', (req, res) => {
+apiRouter.put('/workspace/config', rejectInSandbox, (req, res) => {
   try {
     const { rootFile, createIfMissing } = req.body || {};
     if (rootFile !== undefined && typeof rootFile !== 'string') {
@@ -226,7 +302,7 @@ apiRouter.put('/workspace/config', (req, res) => {
 });
 
 // Reinitialize default template
-apiRouter.post('/workspace/init', (_req, res) => {
+apiRouter.post('/workspace/init', rejectInSandbox, (_req, res) => {
   try {
     initDefaultTemplate();
     res.json({ success: true, message: 'Initialized scientific template.' });
@@ -263,7 +339,7 @@ apiRouter.get('/files/read', (req, res) => {
   }
 });
 
-apiRouter.post('/files/write', (req, res) => {
+apiRouter.post('/files/write', rejectInSandbox, (req, res) => {
   const { path: filePath, content } = req.body;
   if (!filePath || content === undefined) {
     return res.status(400).json({ error: 'Missing path or content' });
@@ -277,7 +353,7 @@ apiRouter.post('/files/write', (req, res) => {
   }
 });
 
-apiRouter.post('/files/create', (req, res) => {
+apiRouter.post('/files/create', rejectInSandbox, (req, res) => {
   const { path: targetPath, isDirectory } = req.body;
   if (!targetPath) {
     return res.status(400).json({ error: 'Missing path' });
@@ -291,7 +367,7 @@ apiRouter.post('/files/create', (req, res) => {
   }
 });
 
-apiRouter.post('/files/rename', async (req, res) => {
+apiRouter.post('/files/rename', rejectInSandbox, async (req, res) => {
   const { oldPath, newPath } = req.body;
   if (!oldPath || !newPath) {
     return res.status(400).json({ error: 'Missing oldPath or newPath' });
@@ -309,7 +385,7 @@ apiRouter.post('/files/rename', async (req, res) => {
   }
 });
 
-apiRouter.post('/files/delete', (req, res) => {
+apiRouter.post('/files/delete', rejectInSandbox, (req, res) => {
   const { path: targetPath } = req.body;
   if (!targetPath) {
     return res.status(400).json({ error: 'Missing path' });
@@ -328,7 +404,7 @@ apiRouter.post('/files/delete', (req, res) => {
   }
 });
 
-apiRouter.post('/files/upload', upload.single('file'), async (req, res) => {
+apiRouter.post('/files/upload', rejectInSandbox, upload.single('file'), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'No file uploaded' });
   }
@@ -448,12 +524,15 @@ apiRouter.delete('/data/manifest/:id', async (req, res) => {
   }
 });
 
-// Venv endpoints
+// Venv endpoints (blocked in Sandbox Mode)
 apiRouter.get('/venv/status', (_req, res) => {
+  if (BIONIC_SANDBOX_MODE) {
+    return res.json({ exists: false, pythonPath: '', packages: [], sandboxDisabled: true });
+  }
   res.json(getVenvStatus());
 });
 
-apiRouter.post('/venv/create', async (_req, res) => {
+apiRouter.post('/venv/create', rejectInSandbox, async (_req, res) => {
   try {
     const result = await createVenv();
     res.json(result);
@@ -462,7 +541,7 @@ apiRouter.post('/venv/create', async (_req, res) => {
   }
 });
 
-apiRouter.post('/venv/install', async (_req, res) => {
+apiRouter.post('/venv/install', rejectInSandbox, async (_req, res) => {
   try {
     const result = await installRequirements();
     res.json(result);
@@ -471,7 +550,7 @@ apiRouter.post('/venv/install', async (_req, res) => {
   }
 });
 
-apiRouter.post('/venv/run', async (req, res) => {
+apiRouter.post('/venv/run', rejectInSandbox, async (req, res) => {
   const { scriptPath, args } = req.body;
   if (!scriptPath) {
     return res.status(400).json({ error: 'Missing scriptPath' });
@@ -485,15 +564,604 @@ apiRouter.post('/venv/run', async (req, res) => {
   }
 });
 
-// Agent endpoints
-apiRouter.get('/agent/config', (_req, res) => {
-  const isOpenCodeInstalled = Boolean(getOpenCodeBinary());
+// Dynamic model registry endpoint (fetches admin-managed models from Hub shim in Hub Mode)
+apiRouter.get('/models', async (_req, res) => {
+  if (BIONIC_HUB_MODE) {
+    try {
+      const resp = await fetch(`${BIONIC_SHIM_URL}/models`, {
+        headers: { 'X-Bionic-Shim-Token': BIONIC_LOCAL_SHIM_TOKEN }
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        return res.json(data);
+      }
+    } catch {
+      // Fall through to empty managed list
+    }
+    return res.json({ hubManaged: true, models: [] });
+  }
   res.json({
+    hubManaged: false,
+    models: [
+      { slug: 'gemini-2.5-flash', displayName: 'Gemini 2.5 Flash', provider: 'gemini', protocol: 'google', active: Boolean(GEMINI_API_KEY) },
+      { slug: 'gpt-4o', displayName: 'GPT-4o', provider: 'openai', protocol: 'openai', active: Boolean(OPENAI_API_KEY) },
+      { slug: 'claude-3-5-sonnet-20241022', displayName: 'Claude 3.5 Sonnet', provider: 'anthropic', protocol: 'anthropic', active: Boolean(ANTHROPIC_API_KEY) }
+    ]
+  });
+});
+
+// Lightweight workspace metadata endpoint for Editor Publish/Save modal (reads bionic.yaml + stats)
+apiRouter.get('/workspace/meta', (_req, res) => {
+  try {
+    res.json(collectWorkspaceMeta());
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Unified Save Snapshot endpoint:
+// 1. Update data/manifest.json (+ DATA_MANIFEST.md + web-report/data/data_manifest.json) & bionic.yaml
+// 2. Push un-synced raw data via scripts/data-push.sh -> GCS & refresh derived manifest mirrors
+// 3. Git commit code/spec/manifest & push to Hub Git proxy (durable GCS bundle backup)
+// 4. Sync metadata & latest commit SHA to Hub DB so the Project Homepage updates immediately
+apiRouter.post('/hub/save', rejectInSandbox, async (req, res) => {
+  try {
+    scaffoldPortableProjectScripts(WORKSPACE_DIR);
+    upgradeManagedScriptsIfLegacy(WORKSPACE_DIR);
+
+    const title = typeof req.body?.title === 'string' && req.body.title.trim()
+      ? req.body.title.replace(/[\r\n\0]/g, ' ').trim().slice(0, 160)
+      : undefined;
+    const summary = typeof req.body?.summary === 'string'
+      ? req.body.summary.replace(/\0/g, '').trim().slice(0, 4000)
+      : undefined;
+    const message = typeof req.body?.message === 'string' && req.body.message.trim()
+      ? req.body.message.replace(/[\r\n\0]/g, ' ').trim().slice(0, 140)
+      : (title ? `save: ${title}` : 'save: workspace snapshot');
+
+    // Step 1: Refresh manifest + bionic.yaml + .gitignore
+    const manifestSync = await syncRawDataDirectoryToManifest();
+    if (title !== undefined || summary !== undefined) {
+      updateBionicYamlFields(WORKSPACE_DIR, { title, summary });
+    }
+    ensureDataGitignore();
+
+    // Step 2: Push raw datasets to GCS & synchronously refresh manifest mirrors before Git commit
+    const spawnOpts = getTargetSpawnOptions();
+    let dataPushStdout = '';
+    const dataPushScript = path.join(WORKSPACE_DIR, 'scripts', 'data-push.sh');
+    if (fs.existsSync(dataPushScript)) {
+      const dp = await execFileAsync('bash', [dataPushScript], {
+        cwd: WORKSPACE_DIR,
+        timeout: 300_000,
+        maxBuffer: 10 * 1024 * 1024,
+        ...spawnOpts
+      });
+      dataPushStdout = dp.stdout.trim();
+      await refreshDerivedManifestMirrors();
+    }
+
+    // Step 3: Git commit workspace-local repo & push to Hub Git proxy
+    let gitCommitSha = '';
+    if (!fs.existsSync(path.join(WORKSPACE_DIR, '.git'))) {
+      await execFileAsync('git', ['init', '-b', 'main'], { cwd: WORKSPACE_DIR, timeout: 15_000, ...spawnOpts }).catch(
+        () => execFileAsync('git', ['init'], { cwd: WORKSPACE_DIR, timeout: 15_000, ...spawnOpts })
+      );
+    }
+    await execFileAsync('git', ['config', 'user.name'], { cwd: WORKSPACE_DIR, ...spawnOpts }).catch(() =>
+      execFileAsync('git', ['config', 'user.name', 'Bionic Researcher'], { cwd: WORKSPACE_DIR, ...spawnOpts })
+    );
+    await execFileAsync('git', ['config', 'user.email'], { cwd: WORKSPACE_DIR, ...spawnOpts }).catch(() =>
+      execFileAsync('git', ['config', 'user.email', 'researcher@bionic.local'], { cwd: WORKSPACE_DIR, ...spawnOpts })
+    );
+    await execFileAsync('git', ['add', '-A'], { cwd: WORKSPACE_DIR, timeout: 30_000, ...spawnOpts });
+    let hasStaged = false;
+    try {
+      await execFileAsync('git', ['diff', '--cached', '--quiet'], { cwd: WORKSPACE_DIR, ...spawnOpts });
+    } catch {
+      hasStaged = true;
+    }
+    if (hasStaged) {
+      await execFileAsync('git', ['commit', '-m', message], { cwd: WORKSPACE_DIR, timeout: 30_000, ...spawnOpts });
+    }
+    try {
+      const { stdout: shaOut } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: WORKSPACE_DIR, ...spawnOpts });
+      gitCommitSha = shaOut.trim();
+    } catch {
+      gitCommitSha = '';
+    }
+
+    if (BIONIC_HUB_MODE && BIONIC_SHIM_URL && BIONIC_PROJECT_ID && BIONIC_LOCAL_SHIM_TOKEN && gitCommitSha) {
+      const hubGitUrl = `${BIONIC_SHIM_URL}/git/${BIONIC_PROJECT_ID}.git`;
+      await execFileAsync(
+        'git',
+        ['-c', `http.extraHeader=X-Bionic-Shim-Token: ${BIONIC_LOCAL_SHIM_TOKEN}`, 'push', hubGitUrl, 'HEAD:refs/heads/main', '--force'],
+        { cwd: WORKSPACE_DIR, timeout: 120_000, maxBuffer: 10 * 1024 * 1024, ...spawnOpts }
+      );
+    }
+
+    // Step 4: Sync workspace stats, bionic.yaml, manifest pointers & gitCommitSha to Hub DB (non-fatal on 404)
+    const meta = collectWorkspaceMeta();
+    let hubSynced = false;
+    if (BIONIC_HUB_MODE && BIONIC_SHIM_URL && BIONIC_LOCAL_SHIM_TOKEN) {
+      try {
+        const syncRes = await fetch(`${BIONIC_SHIM_URL}/sync-meta`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Bionic-Shim-Token': BIONIC_LOCAL_SHIM_TOKEN
+          },
+          body: JSON.stringify({ ...meta, gitCommitSha })
+        });
+        hubSynced = syncRes.ok;
+      } catch {
+        hubSynced = false;
+      }
+    }
+
+    res.json({
+      success: true,
+      gitCommitSha,
+      manifestSync,
+      dataPushStdout,
+      hubSynced
+    });
+  } catch (err: any) {
+    res.status(400).json({
+      success: false,
+      error: err.stderr?.trim() || err.message || 'Save snapshot failed',
+      stdout: err.stdout?.trim() || ''
+    });
+  }
+});
+
+// Unified Portable Publish endpoint — leak-safe ordered pipeline delegating to scripts/*.sh:
+// 1. Update data/manifest.json + bionic.yaml + .gitignore (upgrade legacy managed scripts if unmodified)
+// 2. Run ./scripts/verify-data.sh BEFORE pushing blobs or Git (fail fast on leaks/missing report)
+// 3. Push raw datasets via ./scripts/data-push.sh & synchronously refresh manifest mirrors
+// 4. Commit & push code/spec/manifest to Hub Git + stream web-report/ & _bionic_meta/ via ./scripts/publish.sh
+apiRouter.post('/hub/publish', rejectInSandbox, async (req, res) => {
+  try {
+    scaffoldPortableProjectScripts(WORKSPACE_DIR);
+    upgradeManagedScriptsIfLegacy(WORKSPACE_DIR);
+
+    const scriptPath = path.join(WORKSPACE_DIR, 'scripts', 'publish.sh');
+    if (!fs.existsSync(scriptPath)) {
+      return res.status(400).json({ error: 'Workspace is missing scripts/publish.sh' });
+    }
+    const visibility = ['private', 'org', 'public'].includes(req.body?.visibility) ? req.body.visibility : 'private';
+    const title = typeof req.body?.title === 'string' && req.body.title.trim()
+      ? req.body.title.replace(/[\r\n\0]/g, ' ').trim().slice(0, 140)
+      : 'Published Report';
+    const summary = typeof req.body?.summary === 'string'
+      ? req.body.summary.replace(/\0/g, '').trim().slice(0, 4000)
+      : '';
+    const dryRun = Boolean(req.body?.dryRun);
+    const noGit = Boolean(req.body?.noGit);
+
+    // Step 1: Auto-register/refresh data/raw/* in data/manifest.json & update bionic.yaml
+    await syncRawDataDirectoryToManifest();
+    if (req.body?.updateBionicYaml !== false) {
+      updateBionicYamlFields(WORKSPACE_DIR, {
+        ...(title ? { title } : {}),
+        ...(summary ? { summary } : {})
+      });
+    }
+    ensureDataGitignore();
+
+    const spawnOpts = getTargetSpawnOptions();
+
+    // Step 2: Pre-flight verification BEFORE pushing raw data or Git
+    const verifyScript = path.join(WORKSPACE_DIR, 'scripts', 'verify-data.sh');
+    if (fs.existsSync(verifyScript)) {
+      await execFileAsync('bash', [verifyScript], {
+        cwd: WORKSPACE_DIR,
+        timeout: 120_000,
+        maxBuffer: 10 * 1024 * 1024,
+        ...spawnOpts
+      });
+    }
+
+    // Step 3: Push un-synced raw datasets to GCS & synchronously refresh manifest mirrors before Git commit
+    const dataPushScript = path.join(WORKSPACE_DIR, 'scripts', 'data-push.sh');
+    let dataPushRan = false;
+    if (!dryRun && fs.existsSync(dataPushScript)) {
+      await execFileAsync('bash', [dataPushScript], {
+        cwd: WORKSPACE_DIR,
+        timeout: 300_000,
+        maxBuffer: 10 * 1024 * 1024,
+        ...spawnOpts
+      });
+      await refreshDerivedManifestMirrors();
+      dataPushRan = true;
+    }
+
+    // Step 4 & 5: Collect fresh workspace stats (passed via env so it never pollutes WORKSPACE_DIR) & run publish.sh
+    const wsMeta = collectWorkspaceMeta();
+    const publishSpawnOpts = getTargetSpawnOptions({
+      BIONIC_WORKSPACE_STATS_JSON: JSON.stringify({
+        workspaceDir: wsMeta.workspaceDir,
+        rootFile: wsMeta.rootFile,
+        totalBytes: wsMeta.totalBytes,
+        fileCount: wsMeta.fileCount,
+        lastEditedAt: wsMeta.lastEditedAt,
+        topLevelItems: wsMeta.topLevelItems
+      })
+    });
+
+    const args = [scriptPath, '--visibility', visibility, '--title', title, '--summary', summary];
+    const scriptText = fs.readFileSync(scriptPath, 'utf-8');
+    if (scriptText.includes('--skip-verify')) args.push('--skip-verify');
+    if (dataPushRan && scriptText.includes('--skip-data-push')) args.push('--skip-data-push');
+    if (dryRun) args.push('--dry-run');
+    if (noGit) args.push('--no-git');
+
+    const { stdout, stderr } = await execFileAsync('bash', args, {
+      cwd: WORKSPACE_DIR,
+      timeout: 180_000,
+      maxBuffer: 10 * 1024 * 1024,
+      ...publishSpawnOpts
+    });
+
+    let publication: any = null;
+    try {
+      const lastLine = stdout.trim().split('\n').pop() || '';
+      if (lastLine.startsWith('{')) publication = JSON.parse(lastLine);
+    } catch {}
+
+    res.json({ success: true, publication, stdout: stdout.trim(), stderr: stderr.trim() });
+  } catch (err: any) {
+    res.status(400).json({
+      success: false,
+      error: err.stderr?.trim() || err.message || 'Publish script failed',
+      stdout: err.stdout?.trim() || ''
+    });
+  }
+});
+
+// Hub-local daemon control endpoints (authenticated strictly via X-Bionic-Daemon-Token)
+apiRouter.get('/hub-local/activity', requireDaemonToken, (_req, res) => {
+  res.json({
+    lastUserActivityAt,
+    activeAgentTurns,
+    activeSubagents: 0,
+    wsClients: activeClients.size
+  });
+});
+
+apiRouter.post('/hub-local/prepare-freeze', requireDaemonToken, async (_req, res) => {
+  // Best-effort 15-second WIP autosave to refs/bionic/autosave (never blocks freeze)
+  let autosaved = false;
+  try {
+    const spawnOpts = getTargetSpawnOptions();
+    const { stdout: isRepo } = await execFileAsync('git', ['rev-parse', '--is-inside-work-tree'], {
+      cwd: WORKSPACE_DIR,
+      timeout: 3000,
+      ...spawnOpts
+    });
+    if (isRepo.trim() === 'true') {
+      await execFileAsync('git', ['status', '--porcelain'], {
+        cwd: WORKSPACE_DIR,
+        timeout: 5000,
+        ...spawnOpts
+      });
+      autosaved = true;
+    }
+  } catch {
+    autosaved = false;
+  }
+  res.json({ ready: true, autosaved });
+});
+
+apiRouter.post('/hub-local/apply-manifest', requireDaemonToken, async (req, res) => {
+  try {
+    const entries = Array.isArray(req.body?.entries) ? req.body.entries : [req.body];
+    const applied = [];
+    for (const item of entries) {
+      if (!item?.filepath || !item?.storage?.uri) continue;
+      const entry = await registerRemoteDataEntry({
+        filepath: item.filepath,
+        sha256: item.sha256 || '',
+        sizeBytes: Number(item.sizeBytes || 0),
+        description: item.description || '',
+        id: item.id,
+        storage: item.storage
+      });
+      applied.push(entry);
+    }
+    res.json({ success: true, appliedCount: applied.length, entries: applied });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+apiRouter.post('/hub-local/sync-config', requireDaemonToken, (req, res) => {
+  try {
+    const result = applyHubManagedOpenCodeConfig({
+      models: Array.isArray(req.body?.models) ? req.body.models : [],
+      mcpServers: Array.isArray(req.body?.mcpServers) ? req.body.mcpServers : [],
+      skillSlugs: Array.isArray(req.body?.skillSlugs) ? req.body.skillSlugs : [],
+      shimUrl: BIONIC_SHIM_URL
+    });
+    res.json({ success: true, ...result });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+function parseSimpleBionicYaml(raw: string): Record<string, any> {
+  const out: Record<string, any> = { raw };
+  const lines = raw.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const m = line.match(/^(name|title|description|summary)\s*:\s*(.*)$/);
+    if (!m) continue;
+    const key = m[1];
+    const val = m[2].trim();
+    if (val === '|' || val === '>') {
+      const blockLines: string[] = [];
+      for (let j = i + 1; j < lines.length; j++) {
+        if (/^\s+/.test(lines[j]) || lines[j].trim() === '') {
+          blockLines.push(lines[j].replace(/^ {1,2}/, ''));
+          i = j;
+        } else {
+          break;
+        }
+      }
+      out[key] = blockLines.join('\n').trim();
+    } else {
+      out[key] = val.replace(/^["']|["']$/g, '');
+    }
+  }
+  return out;
+}
+
+function updateBionicYamlFields(workspaceDir: string, updates: { title?: string; summary?: string }): Record<string, any> {
+  const yamlPath = path.join(workspaceDir, 'bionic.yaml');
+  let raw = fs.existsSync(yamlPath)
+    ? fs.readFileSync(yamlPath, 'utf-8')
+    : `schemaVersion: 1\nname: "bionic-analysis"\n`;
+
+  const setScalarOrBlock = (text: string, key: string, value: string, multiline: boolean): string => {
+    const lines = text.split(/\r?\n/);
+    const outLines: string[] = [];
+    let replaced = false;
+    for (let i = 0; i < lines.length; i++) {
+      if (new RegExp(`^${key}\\s*:`).test(lines[i])) {
+        // Skip any indented block lines following existing key
+        if (/:\s*[|>]\s*$/.test(lines[i])) {
+          while (i + 1 < lines.length && (/^\s+/.test(lines[i + 1]) || lines[i + 1].trim() === '')) {
+            i++;
+          }
+        }
+        if (multiline) {
+          outLines.push(`${key}: |`);
+          for (const sl of value.split(/\r?\n/)) {
+            outLines.push(`  ${sl}`);
+          }
+        } else {
+          outLines.push(`${key}: ${JSON.stringify(value)}`);
+        }
+        replaced = true;
+      } else {
+        outLines.push(lines[i]);
+      }
+    }
+    if (!replaced) {
+      // Insert after `name:` if present, else at end
+      const nameIdx = outLines.findIndex((l) => /^name\s*:/.test(l));
+      const insertLines = multiline
+        ? [`${key}: |`, ...value.split(/\r?\n/).map((sl) => `  ${sl}`)]
+        : [`${key}: ${JSON.stringify(value)}`];
+      if (nameIdx >= 0) {
+        outLines.splice(nameIdx + 1, 0, ...insertLines);
+      } else {
+        outLines.push(...insertLines);
+      }
+    }
+    return outLines.join('\n').replace(/\n*$/, '\n');
+  };
+
+  if (typeof updates.title === 'string') {
+    raw = setScalarOrBlock(raw, 'title', updates.title.trim().slice(0, 160), false);
+  }
+  if (typeof updates.summary === 'string') {
+    raw = setScalarOrBlock(raw, 'summary', updates.summary.trim().slice(0, 4000), true);
+  }
+
+  fs.writeFileSync(yamlPath, raw, 'utf-8');
+  applyTargetOwnership(yamlPath);
+  return parseSimpleBionicYaml(raw);
+}
+
+function collectWorkspaceMeta() {
+  const skipDirs = new Set(['.venv', '.git', 'node_modules', 'lost+found', '__pycache__', '.pytest_cache']);
+  let totalBytes = 0;
+  let fileCount = 0;
+  let latestMtimeMs = 0;
+
+  const walk = (dir: string, depth: number) => {
+    if (depth > 8) return;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (skipDirs.has(e.name)) continue;
+      const full = path.join(dir, e.name);
+      let st: fs.Stats;
+      try {
+        st = fs.lstatSync(full);
+      } catch {
+        continue;
+      }
+      if (st.isSymbolicLink()) continue;
+      if (st.isDirectory()) {
+        walk(full, depth + 1);
+      } else if (st.isFile()) {
+        totalBytes += st.size;
+        fileCount++;
+        if (st.mtimeMs > latestMtimeMs) latestMtimeMs = st.mtimeMs;
+      }
+    }
+  };
+  walk(WORKSPACE_DIR, 0);
+
+  const topLevelItems: Array<{ name: string; path: string; isDirectory: boolean; sizeBytes: number; updatedAt: string }> = [];
+  try {
+    for (const e of fs.readdirSync(WORKSPACE_DIR, { withFileTypes: true })) {
+      if (skipDirs.has(e.name) || e.name.startsWith('.')) continue;
+      const full = path.join(WORKSPACE_DIR, e.name);
+      try {
+        const st = fs.lstatSync(full);
+        topLevelItems.push({
+          name: e.name,
+          path: e.name,
+          isDirectory: st.isDirectory(),
+          sizeBytes: st.isFile() ? st.size : 0,
+          updatedAt: st.mtime.toISOString()
+        });
+      } catch {}
+    }
+  } catch {}
+  topLevelItems.sort((a, b) => Number(b.isDirectory) - Number(a.isDirectory) || a.name.localeCompare(b.name));
+
+  const yamlPath = path.join(WORKSPACE_DIR, 'bionic.yaml');
+  const bionicYaml = fs.existsSync(yamlPath)
+    ? parseSimpleBionicYaml(fs.readFileSync(yamlPath, 'utf-8'))
+    : null;
+
+  let manifestEntries: Array<{ filepath: string; sizeBytes: number; sha256: string; uri?: string }> = [];
+  const manifestPath = path.join(WORKSPACE_DIR, 'data', 'manifest.json');
+  if (fs.existsSync(manifestPath)) {
+    try {
+      const doc = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+      if (Array.isArray(doc?.entries)) {
+        manifestEntries = doc.entries.map((item: any) => ({
+          filepath: String(item.filepath || ''),
+          sizeBytes: Number(item.sizeBytes || 0),
+          sha256: String(item.sha256 || ''),
+          uri: item.storage?.uri ? String(item.storage.uri) : undefined
+        }));
+      }
+    } catch {}
+  }
+
+  return {
+    workspaceDir: WORKSPACE_DIR,
+    rootFile: getProjectRootFile(),
+    totalBytes,
+    fileCount,
+    lastEditedAt: latestMtimeMs > 0 ? new Date(latestMtimeMs).toISOString() : null,
+    bionicYaml,
+    topLevelItems,
+    manifestEntries
+  };
+}
+
+apiRouter.get('/hub-local/project-meta', requireDaemonToken, (_req, res) => {
+  try {
+    res.json(collectWorkspaceMeta());
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+apiRouter.post('/hub-local/project-meta', requireDaemonToken, (req, res) => {
+  try {
+    const body = (req.body || {}) as { title?: string; summary?: string };
+    const bionicYaml = updateBionicYamlFields(WORKSPACE_DIR, {
+      title: typeof body.title === 'string' ? body.title : undefined,
+      summary: typeof body.summary === 'string' ? body.summary : undefined
+    });
+    res.json({ success: true, bionicYaml });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Agent endpoints
+apiRouter.get('/agent/config', async (_req, res) => {
+  const isOpenCodeInstalled = Boolean(getOpenCodeBinary());
+
+  if (BIONIC_HUB_MODE) {
+    let hubModels: Array<{
+      slug: string;
+      displayName: string;
+      provider: string;
+      protocol: 'anthropic' | 'openai' | 'google';
+      modelId: string;
+    }> = [];
+    try {
+      const resp = await fetch(`${BIONIC_SHIM_URL}/models`, {
+        headers: { 'X-Bionic-Shim-Token': BIONIC_LOCAL_SHIM_TOKEN }
+      });
+      if (resp.ok) {
+        const data = (await resp.json()) as { models?: typeof hubModels };
+        hubModels = Array.isArray(data.models) ? data.models : [];
+      }
+    } catch {
+      // Hub shim temporarily unreachable; keep empty list
+    }
+
+    if (hubModels.length > 0) {
+      try {
+        applyHubManagedOpenCodeConfig({
+          models: hubModels.map((m) => ({
+            slug: m.slug,
+            displayName: m.displayName || m.slug,
+            protocol: m.protocol,
+            modelId: m.modelId || m.slug
+          })),
+          mcpServers: [],
+          shimUrl: BIONIC_SHIM_URL
+        });
+      } catch {
+        // Best-effort sync
+      }
+    }
+
+    const hasGemini = hubModels.some((m) => m.protocol === 'google' || m.provider === 'gemini' || m.provider === 'vertex');
+    const hasOpenai = hubModels.some((m) => m.protocol === 'openai' || m.provider === 'openai');
+    const hasAnthropic = hubModels.some((m) => m.protocol === 'anthropic' || m.provider === 'anthropic' || m.provider === 'aws_bedrock');
+    const firstModel = hubModels[0];
+    const mapToUiProvider = (m?: { provider: string; protocol: string }) => {
+      if (!m) return 'gemini';
+      if (m.protocol === 'google' || m.provider === 'gemini' || m.provider === 'vertex') return 'gemini';
+      if (m.protocol === 'anthropic' || m.provider === 'anthropic' || m.provider === 'aws_bedrock') return 'anthropic';
+      return 'openai';
+    };
+
+    return res.json({
+      hubManaged: true,
+      hasGeminiKey: hasGemini,
+      hasOpenaiKey: hasOpenai,
+      hasAnthropicKey: hasAnthropic,
+      isOpenCodeInstalled,
+      harness: isOpenCodeInstalled ? 'opencode' : 'built-in',
+      models: hubModels,
+      defaultModel: firstModel?.slug || '',
+      availableProviders: [
+        { id: 'gemini', name: 'Google Gemini (Hub Managed)', active: hasGemini },
+        { id: 'openai', name: 'OpenAI (Hub Managed)', active: hasOpenai },
+        { id: 'anthropic', name: 'Anthropic / Bedrock Claude (Hub Managed)', active: hasAnthropic },
+        { id: 'demo', name: 'Demo / Scientific Assistant (Offline)', active: true }
+      ],
+      defaultProvider: firstModel ? mapToUiProvider(firstModel) : 'gemini'
+    });
+  }
+
+  res.json({
+    hubManaged: false,
     hasGeminiKey: Boolean(GEMINI_API_KEY),
     hasOpenaiKey: Boolean(OPENAI_API_KEY),
     hasAnthropicKey: Boolean(ANTHROPIC_API_KEY),
     isOpenCodeInstalled,
     harness: isOpenCodeInstalled ? 'opencode' : 'built-in',
+    models: [],
+    defaultModel: GEMINI_API_KEY ? 'gemini-2.5-flash' : (OPENAI_API_KEY ? 'gpt-4o' : 'claude-3-5-sonnet-20241022'),
     availableProviders: [
       { id: 'gemini', name: 'Google Gemini (Gemini 2.5 Flash / Pro)', active: Boolean(GEMINI_API_KEY) },
       { id: 'openai', name: 'OpenAI (GPT-4o)', active: Boolean(OPENAI_API_KEY) },
@@ -565,6 +1233,11 @@ apiRouter.post('/agent/subagents/:jobId/cancel', async (req, res) => {
 });
 
 apiRouter.post('/agent/save-config', async (req, res) => {
+  if (BIONIC_HUB_MODE || BIONIC_SANDBOX_MODE) {
+    return res.status(403).json({
+      error: 'Direct provider API key configuration is disabled in Hub/Sandbox Mode. Models are managed centrally by Bionic Hub admins.'
+    });
+  }
   const sanitizeKey = (v: unknown): string | undefined => {
     if (typeof v !== 'string') return undefined;
     const cleaned = v.replace(/[\r\n\0]/g, '').trim();
@@ -693,8 +1366,10 @@ apiRouter.post('/agent/chat', async (req, res) => {
   }
 
   const sessionId = config?.sessionId;
+  // In Hub Mode, do not cancel running agent turns on transient proxy/tab disconnects;
+  // cancellation occurs strictly via explicit POST /api/agent/cancel.
   res.on('close', () => {
-    if (!res.writableEnded && sessionId) {
+    if (!BIONIC_HUB_MODE && !res.writableEnded && sessionId) {
       cancelAgentSession(sessionId);
       killSessionProcesses(sessionId);
     }
@@ -704,12 +1379,21 @@ apiRouter.post('/agent/chat', async (req, res) => {
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
 
+  // 15s SSE keepalive heartbeats prevent reverse proxy idle disconnects during long steps
+  const sseKeepalive = setInterval(() => {
+    if (!res.writableEnded) {
+      res.write(': keepalive\n\n');
+    }
+  }, 15_000);
+  sseKeepalive.unref();
+
   const sendEvent = (event: StepEvent) => {
     if (!res.writableEnded) {
       res.write(`data: ${JSON.stringify(event)}\n\n`);
     }
   };
 
+  activeAgentTurns++;
   try {
     const result = await runAgentConversation(messages, config || { provider: 'demo' }, (evt) => {
       // Prevent duplicate final events if a runner emits one
@@ -730,6 +1414,9 @@ apiRouter.post('/agent/chat', async (req, res) => {
       description: err.message
     });
     res.end();
+  } finally {
+    activeAgentTurns = Math.max(0, activeAgentTurns - 1);
+    clearInterval(sseKeepalive);
   }
 });
 
@@ -790,6 +1477,10 @@ wss.on('connection', (rawWs) => {
     try {
       const data = JSON.parse(message.toString());
       if (data.type === 'terminal_start') {
+        if (BIONIC_SANDBOX_MODE) {
+          ws.send(JSON.stringify({ type: 'terminal_output', data: '\r\nTerminal execution is disabled in Sandbox Mode.\r\n' }));
+          return;
+        }
         if (!terminalSession) {
           terminalSession = new TerminalSession(ws);
         }
@@ -869,7 +1560,12 @@ if (fs.existsSync(clientDist)) {
       const safeJson = JSON.stringify({
         baseUrl: basePrefix,
         baseSpec: rootFile,
-        rootFile
+        rootFile,
+        hubMode: BIONIC_HUB_MODE,
+        sandboxMode: BIONIC_SANDBOX_MODE,
+        hubUrl: BIONIC_HUB_URL,
+        projectId: BIONIC_PROJECT_ID,
+        reportsOrigin: BIONIC_REPORTS_ORIGIN
       })
         .replace(/</g, '\\u003c')
         .replace(/>/g, '\\u003e')
@@ -952,8 +1648,30 @@ server.on('error', (err: any) => {
   }
 });
 
-server.listen(PORT, HOST, () => {
-  const displayHost = HOST === '0.0.0.0' ? 'localhost' : HOST;
+const listenHost = BIONIC_HUB_MODE && HOST === '0.0.0.0' ? '127.0.0.1' : HOST;
+
+let unixServer: http.Server | null = null;
+if (BIONIC_UNIX_SOCKET) {
+  try {
+    fs.mkdirSync(path.dirname(BIONIC_UNIX_SOCKET), { recursive: true });
+    if (fs.existsSync(BIONIC_UNIX_SOCKET)) fs.unlinkSync(BIONIC_UNIX_SOCKET);
+    unixServer = http.createServer(app);
+    unixServer.on('upgrade', (request, socket, head) => {
+      server.emit('upgrade', request, socket, head);
+    });
+    unixServer.listen(BIONIC_UNIX_SOCKET, () => {
+      try {
+        fs.chmodSync(BIONIC_UNIX_SOCKET, 0o660);
+      } catch {}
+      console.log(`🔌 Bionic Editor Unix socket listening at ${BIONIC_UNIX_SOCKET}`);
+    });
+  } catch (err) {
+    console.warn(`Could not bind Unix socket ${BIONIC_UNIX_SOCKET}:`, err);
+  }
+}
+
+server.listen(PORT, listenHost, () => {
+  const displayHost = listenHost === '0.0.0.0' ? 'localhost' : listenHost;
   const baseDisplay = BASE_URL ? `${BASE_URL}/` : '';
   const rootFile = getProjectRootFile();
   console.log(`\n======================================================`);
@@ -963,6 +1681,12 @@ server.listen(PORT, HOST, () => {
   if (BASE_URL) {
     console.log(`🔗 Base URL Slug: ${BASE_URL}`);
   }
+  if (BIONIC_HUB_MODE) {
+    console.log(`🏢 Hub Mode: ENABLED (project=${BIONIC_PROJECT_ID || 'local'})`);
+  }
+  if (BIONIC_SANDBOX_MODE) {
+    console.log(`🛡️ Sandbox Mode: ENABLED (code execution disabled)`);
+  }
   console.log(`📊 Web Report: http://${displayHost}:${PORT}/${BASE_URL ? BASE_URL.slice(1) + '/' : ''}report/`);
   console.log(`======================================================\n`);
 });
@@ -970,6 +1694,12 @@ server.listen(PORT, HOST, () => {
 const shutdownGracefully = () => {
   opencodeServer.stop();
   closeFileWatcher();
+  if (unixServer) {
+    try {
+      unixServer.close();
+      if (BIONIC_UNIX_SOCKET && fs.existsSync(BIONIC_UNIX_SOCKET)) fs.unlinkSync(BIONIC_UNIX_SOCKET);
+    } catch {}
+  }
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 2000).unref();
 };

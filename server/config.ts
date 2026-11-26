@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 
@@ -198,8 +198,11 @@ export function resolveTargetUser(workspaceDir: string, explicitUser?: string): 
         }
       } catch {}
 
-      const uidStr = execSync(`id -u "${configuredUser}"`, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] }).trim();
-      const gidStr = execSync(`id -g "${configuredUser}"`, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] }).trim();
+      if (!/^[a-z_][a-z0-9_-]*[$]?$/i.test(configuredUser)) {
+        return { username: configuredUser };
+      }
+      const uidStr = execFileSync('id', ['-u', configuredUser], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] }).trim();
+      const gidStr = execFileSync('id', ['-g', configuredUser], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] }).trim();
       return {
         username: configuredUser,
         uid: parseInt(uidStr, 10),
@@ -214,10 +217,10 @@ export function resolveTargetUser(workspaceDir: string, explicitUser?: string): 
   // If running as root on Linux/POSIX, check SUDO_USER or workspace owner
   if (typeof process.getuid === 'function' && process.getuid() === 0) {
     const sudoUser = process.env.SUDO_USER;
-    if (sudoUser && sudoUser !== 'root') {
+    if (sudoUser && sudoUser !== 'root' && /^[a-z_][a-z0-9_-]*[$]?$/i.test(sudoUser)) {
       try {
-        const uidStr = execSync(`id -u "${sudoUser}"`, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] }).trim();
-        const gidStr = execSync(`id -g "${sudoUser}"`, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] }).trim();
+        const uidStr = execFileSync('id', ['-u', sudoUser], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] }).trim();
+        const gidStr = execFileSync('id', ['-g', sudoUser], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] }).trim();
         return {
           username: sudoUser,
           uid: parseInt(uidStr, 10),
@@ -247,6 +250,95 @@ export function resolveTargetUser(workspaceDir: string, explicitUser?: string): 
 
 export const TARGET_USER = resolveTargetUser(WORKSPACE_DIR, SERVICE_USER);
 
+export const BIONIC_HUB_MODE = process.env.BIONIC_HUB_MODE === 'true' || process.env.BIONIC_HUB_MODE === '1';
+export const BIONIC_IS_FORK = process.env.BIONIC_IS_FORK === 'true' || process.env.BIONIC_IS_FORK === '1';
+export const BIONIC_SANDBOX_MODE = process.env.BIONIC_SANDBOX_MODE === 'true' || process.env.BIONIC_SANDBOX_MODE === '1';
+export const BIONIC_HUB_URL = (process.env.BIONIC_HUB_URL || '').replace(/\/+$/, '');
+export const BIONIC_PROJECT_ID = process.env.BIONIC_PROJECT_ID || '';
+export const BIONIC_SHIM_URL = (process.env.BIONIC_SHIM_URL || 'http://127.0.0.1:3001').replace(/\/+$/, '');
+export const BIONIC_LOCAL_SHIM_TOKEN = process.env.BIONIC_LOCAL_SHIM_TOKEN || '';
+export const BIONIC_DAEMON_TOKEN = process.env.BIONIC_DAEMON_TOKEN || '';
+export const BIONIC_UNIX_SOCKET = process.env.BIONIC_UNIX_SOCKET || '';
+export const BIONIC_REPORTS_ORIGIN = (process.env.BIONIC_REPORTS_ORIGIN || '').replace(/\/+$/, '');
+export const BIONIC_MANAGED_SKILLS_DIR = process.env.BIONIC_MANAGED_SKILLS_DIR || '/var/lib/bionic/managed-skills';
+
+// Strict env allowlist used when spawning untrusted workspace processes in Hub Mode
+const HUB_SAFE_ENV_KEYS = new Set([
+  'PATH',
+  'HOME',
+  'USER',
+  'LOGNAME',
+  'SHELL',
+  'LANG',
+  'LC_ALL',
+  'TZ',
+  'TERM',
+  'TMPDIR',
+  'VIRTUAL_ENV',
+  'PYTHONUNBUFFERED',
+  'BIONIC_API_URL',
+  'BIONIC_SHIM_URL',
+  'BIONIC_DATA_PROXY_URL',
+  'BIONIC_GIT_PROXY_URL',
+  'BIONIC_HUB_PUBLISH_URL',
+  'BIONIC_LOCAL_SHIM_TOKEN',
+  'BIONIC_PROJECT_ID',
+  'BIONIC_HUB_MODE',
+  'BIONIC_DATA_BUCKET',
+  'PUBLISH_TARGET',
+  'XDG_CONFIG_HOME',
+  'XDG_CACHE_HOME',
+  'OPENCODE_BIN'
+]);
+
+export function buildSafeChildEnv(extraEnv?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const target = TARGET_USER;
+  if (!BIONIC_HUB_MODE) {
+    return {
+      ...process.env,
+      ...(target.username ? { USER: target.username, LOGNAME: target.username } : {}),
+      ...(target.home ? { HOME: target.home } : {}),
+      ...extraEnv
+    };
+  }
+
+  // In Hub Mode, never spread raw process.env (prevents leaking daemon/hub secrets)
+  const allowedWorkloadKeys = new Set(
+    (process.env.BIONIC_ALLOWED_WORKLOAD_ENV || '')
+      .split(',')
+      .map((k) => k.trim())
+      .filter(Boolean)
+  );
+  const env: NodeJS.ProcessEnv = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (v !== undefined && (HUB_SAFE_ENV_KEYS.has(k) || allowedWorkloadKeys.has(k))) {
+      env[k] = v;
+    }
+  }
+  if (target.username) {
+    env.USER = target.username;
+    env.LOGNAME = target.username;
+  }
+  if (target.home) {
+    env.HOME = target.home;
+  }
+  if (BIONIC_SHIM_URL) {
+    env.BIONIC_SHIM_URL = BIONIC_SHIM_URL;
+    env.BIONIC_DATA_PROXY_URL = `${BIONIC_SHIM_URL}/data`;
+    env.BIONIC_HUB_PUBLISH_URL = `${BIONIC_SHIM_URL}/publish`;
+    if (BIONIC_PROJECT_ID) {
+      env.BIONIC_GIT_PROXY_URL = `${BIONIC_SHIM_URL}/git/${BIONIC_PROJECT_ID}.git`;
+    }
+  }
+  if (BIONIC_LOCAL_SHIM_TOKEN) {
+    env.BIONIC_LOCAL_SHIM_TOKEN = BIONIC_LOCAL_SHIM_TOKEN;
+  }
+  if (extraEnv) {
+    Object.assign(env, extraEnv);
+  }
+  return env;
+}
+
 export function getTargetSpawnOptions(extraEnv?: NodeJS.ProcessEnv): {
   uid?: number;
   gid?: number;
@@ -255,12 +347,7 @@ export function getTargetSpawnOptions(extraEnv?: NodeJS.ProcessEnv): {
   const target = TARGET_USER;
   const isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
   const spawnOpts: { uid?: number; gid?: number; env: NodeJS.ProcessEnv } = {
-    env: {
-      ...process.env,
-      ...(target.username ? { USER: target.username, LOGNAME: target.username } : {}),
-      ...(target.home ? { HOME: target.home } : {}),
-      ...extraEnv
-    }
+    env: buildSafeChildEnv(extraEnv)
   };
 
   if (isRoot && target.uid !== undefined && target.uid !== 0) {

@@ -12,7 +12,7 @@ import {
   BookOpen
 } from 'lucide-react';
 import { useTheme, type ThemePreference } from '../contexts/ThemeContext';
-import { fetchAgentInstructions, saveAgentInstructions } from '../services/api';
+import { fetchAgentInstructions, saveAgentInstructions, type HubManagedModel } from '../services/api';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -24,6 +24,8 @@ interface SettingsModalProps {
     ollamaBaseUrl: string;
     selectedModel: string;
   };
+  hubManaged?: boolean;
+  hubModels?: HubManagedModel[];
   onSaveConfig: (newConfig: any) => void;
   projectRootFile: string;
   markdownFiles: string[];
@@ -36,6 +38,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   isOpen,
   onClose,
   config,
+  hubManaged = false,
+  hubModels = [],
   onSaveConfig,
   projectRootFile,
   markdownFiles,
@@ -313,71 +317,105 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
           {activeTab === 'models' && (
             <div className="space-y-4">
-              <div>
-                <label className="block font-medium text-ink mb-1">Google Gemini API Key</label>
-                <input
-                  type="password"
-                  value={geminiKey}
-                  onChange={(e) => setGeminiKey(e.target.value)}
-                  placeholder="AIzaSy..."
-                  className="w-full border border-edge bg-surface text-ink rounded-lg px-3 py-1.5 outline-none focus:border-accent font-mono"
-                />
-                <p className="text-[11px] text-muted mt-1">Used for Gemini Flash / Pro models.</p>
-              </div>
+              {hubManaged ? (
+                <>
+                  <div className="p-3 bg-blue-50/70 dark:bg-blue-950/35 rounded-lg border border-blue-200 dark:border-blue-800 flex items-start space-x-2">
+                    <ShieldCheck className="w-4 h-4 text-accent flex-shrink-0 mt-0.5" />
+                    <p className="text-[11px] text-ink leading-normal">
+                      <strong>Managed by Bionic Hub:</strong> Model API keys (Gemini, OpenAI, Anthropic, AWS Bedrock) are injected centrally by Bionic Hub&apos;s LLM Gateway and never stored on this VM.
+                    </p>
+                  </div>
 
-              <div>
-                <label className="block font-medium text-ink mb-1">OpenAI API Key</label>
-                <input
-                  type="password"
-                  value={openaiKey}
-                  onChange={(e) => setOpenaiKey(e.target.value)}
-                  placeholder="sk-..."
-                  className="w-full border border-edge bg-surface text-ink rounded-lg px-3 py-1.5 outline-none focus:border-accent font-mono"
-                />
-                <p className="text-[11px] text-muted mt-1">Used for GPT-4o and GPT-4o-mini models.</p>
-              </div>
+                  <div>
+                    <label className="block font-medium text-ink mb-1">Active Model</label>
+                    {hubModels.length > 0 ? (
+                      <select
+                        value={model}
+                        onChange={(e) => setModel(e.target.value)}
+                        className="w-full border border-edge bg-surface text-ink rounded-lg px-3 py-1.5 outline-none focus:border-accent font-mono"
+                      >
+                        {hubModels.map((m) => (
+                          <option key={m.slug} value={m.slug}>
+                            {m.displayName} ({m.slug})
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <p className="text-[11px] text-amber-600 dark:text-amber-400">
+                        No models are currently enabled for your account in Bionic Hub. Sync a ModelConfig YAML via <code className="font-mono">bionic-ctl apply</code>.
+                      </p>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div>
+                    <label className="block font-medium text-ink mb-1">Google Gemini API Key</label>
+                    <input
+                      type="password"
+                      value={geminiKey}
+                      onChange={(e) => setGeminiKey(e.target.value)}
+                      placeholder="AIzaSy..."
+                      className="w-full border border-edge bg-surface text-ink rounded-lg px-3 py-1.5 outline-none focus:border-accent font-mono"
+                    />
+                    <p className="text-[11px] text-muted mt-1">Used for Gemini Flash / Pro models.</p>
+                  </div>
 
-              <div>
-                <label className="block font-medium text-ink mb-1">Anthropic API Key</label>
-                <input
-                  type="password"
-                  value={anthropicKey}
-                  onChange={(e) => setAnthropicKey(e.target.value)}
-                  placeholder="sk-ant-..."
-                  className="w-full border border-edge bg-surface text-ink rounded-lg px-3 py-1.5 outline-none focus:border-accent font-mono"
-                />
-                <p className="text-[11px] text-muted mt-1">Used for Claude Sonnet / Haiku.</p>
-              </div>
+                  <div>
+                    <label className="block font-medium text-ink mb-1">OpenAI API Key</label>
+                    <input
+                      type="password"
+                      value={openaiKey}
+                      onChange={(e) => setOpenaiKey(e.target.value)}
+                      placeholder="sk-..."
+                      className="w-full border border-edge bg-surface text-ink rounded-lg px-3 py-1.5 outline-none focus:border-accent font-mono"
+                    />
+                    <p className="text-[11px] text-muted mt-1">Used for GPT-4o and GPT-4o-mini models.</p>
+                  </div>
 
-              <div>
-                <label className="block font-medium text-ink mb-1">Ollama / OpenAI-Compatible Endpoint</label>
-                <input
-                  type="text"
-                  value={ollamaUrl}
-                  onChange={(e) => setOllamaUrl(e.target.value)}
-                  placeholder="http://localhost:11434/v1"
-                  className="w-full border border-edge bg-surface text-ink rounded-lg px-3 py-1.5 outline-none focus:border-accent font-mono"
-                />
-                <p className="text-[11px] text-muted mt-1">Local endpoint for Ollama, vLLM, or self-hosted models.</p>
-              </div>
+                  <div>
+                    <label className="block font-medium text-ink mb-1">Anthropic API Key</label>
+                    <input
+                      type="password"
+                      value={anthropicKey}
+                      onChange={(e) => setAnthropicKey(e.target.value)}
+                      placeholder="sk-ant-..."
+                      className="w-full border border-edge bg-surface text-ink rounded-lg px-3 py-1.5 outline-none focus:border-accent font-mono"
+                    />
+                    <p className="text-[11px] text-muted mt-1">Used for Claude Sonnet / Haiku.</p>
+                  </div>
 
-              <div>
-                <label className="block font-medium text-ink mb-1">Model Name</label>
-                <input
-                  type="text"
-                  value={model}
-                  onChange={(e) => setModel(e.target.value)}
-                  placeholder="gemini-2.5-flash, gpt-4o, or claude-3-5-sonnet-20241022"
-                  className="w-full border border-edge bg-surface text-ink rounded-lg px-3 py-1.5 outline-none focus:border-accent font-mono"
-                />
-              </div>
+                  <div>
+                    <label className="block font-medium text-ink mb-1">Ollama / OpenAI-Compatible Endpoint</label>
+                    <input
+                      type="text"
+                      value={ollamaUrl}
+                      onChange={(e) => setOllamaUrl(e.target.value)}
+                      placeholder="http://localhost:11434/v1"
+                      className="w-full border border-edge bg-surface text-ink rounded-lg px-3 py-1.5 outline-none focus:border-accent font-mono"
+                    />
+                    <p className="text-[11px] text-muted mt-1">Local endpoint for Ollama, vLLM, or self-hosted models.</p>
+                  </div>
 
-              <div className="p-3 bg-blue-50/70 dark:bg-blue-950/35 rounded-lg border border-blue-200 dark:border-blue-800 flex items-start space-x-2">
-                <ShieldCheck className="w-4 h-4 text-accent flex-shrink-0 mt-0.5" />
-                <p className="text-[11px] text-ink leading-normal">
-                  Keys are stored locally on your Bionic Editor server and never committed to Git (<code className="font-mono">.env</code> is ignored and read-denied to agents).
-                </p>
-              </div>
+                  <div>
+                    <label className="block font-medium text-ink mb-1">Model Name</label>
+                    <input
+                      type="text"
+                      value={model}
+                      onChange={(e) => setModel(e.target.value)}
+                      placeholder="gemini-2.5-flash, gpt-4o, or claude-3-5-sonnet-20241022"
+                      className="w-full border border-edge bg-surface text-ink rounded-lg px-3 py-1.5 outline-none focus:border-accent font-mono"
+                    />
+                  </div>
+
+                  <div className="p-3 bg-blue-50/70 dark:bg-blue-950/35 rounded-lg border border-blue-200 dark:border-blue-800 flex items-start space-x-2">
+                    <ShieldCheck className="w-4 h-4 text-accent flex-shrink-0 mt-0.5" />
+                    <p className="text-[11px] text-ink leading-normal">
+                      Keys are stored locally on your Bionic Editor server and never committed to Git (<code className="font-mono">.env</code> is ignored and read-denied to agents).
+                    </p>
+                  </div>
+                </>
+              )}
             </div>
           )}
 

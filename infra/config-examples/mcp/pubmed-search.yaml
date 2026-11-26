@@ -1,0 +1,17 @@
+apiVersion: bionic.io/v1
+kind: McpServerConfig
+metadata:
+  slug: pubmed-search
+  displayName: "PubMed & Literature Search MCP"
+  description: "Remote streamable HTTP MCP server proxied through Hub MCP Gateway"
+  allowedGroups:
+    - researchers
+    - admins
+  enabled: true
+spec:
+  transport: streamable_http
+  routing: hub_gateway
+  url: "https://mcp.example.org/pubmed"
+  auth:
+    type: none
+  timeoutMs: 30000

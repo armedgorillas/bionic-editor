@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 2,
+  "updatedAt": "2026-11-24T23:40:04.755Z",
+  "entries": [
+    {
+      "id": "kidney_cohort_counts",
+      "filepath": "data/raw/kidney_cohort_counts.csv",
+      "sha256": "668e121642169c42e8c692680d95fa1c3870b264125a4ba220810399815434b2",
+      "sizeBytes": 1481,
+      "acquiredAt": "2026-11-24T23:40:04.755Z",
+      "acquisition": {
+        "method": "script",
+        "scriptPath": "code/generate_cohort_data.py",
+        "command": "python3 code/generate_cohort_data.py",
+        "scriptSha256": "56596faef1b60ac1ab8c88fb71b186aa3b0034a0c6874d53c259fad8a5f12217"
+      },
+      "description": "Synthetic 12-sample kidney injury RNA-seq expression counts (6 vehicle control vs 6 treated).",
+      "excludeFromGit": true,
+      "excludeFromPublication": true
+    }
+  ]
+}

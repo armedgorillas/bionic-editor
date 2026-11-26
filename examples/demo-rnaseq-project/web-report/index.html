@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Kidney Cohort DEG Analysis — Bionic Report</title>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; background: #f8fafc; color: #0f172a; margin: 0; padding: 2rem; }
+    .wrap { max-width: 960px; margin: 0 auto; }
+    .card { background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 1.5rem; margin-bottom: 1.5rem; }
+    h1 { margin: 0 0 0.25rem; font-size: 1.5rem; }
+    .meta { color: #64748b; font-size: 0.875rem; margin-bottom: 1rem; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
+    th, td { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid #e2e8f0; }
+    .badge { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 999px; font-size: 0.75rem; font-weight: 600; }
+    .sig { background: #dcfce7; color: #166534; }
+    .ns { background: #f1f5f9; color: #475569; }
+    .pass { background: #dcfce7; color: #166534; }
+    .fail { background: #fee2e2; color: #991b1b; }
+    svg { width: 100%; height: 280px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>Kidney Cohort Differential Gene Expression</h1>
+      <div class="meta">Self-contained reproducible Bionic module · 14 genes analyzed · 10 significant biomarkers (|log2FC| &ge; 1.0, padj &le; 0.05)</div>
+      <svg id="volcano" viewBox="0 0 600 260" aria-label="Volcano Plot"></svg>
+    </div>
+    <div class="card">
+      <h2>Biomarker Summary Table</h2>
+      <table>
+        <thead><tr><th>Gene</th><th>Pathway</th><th>Ctrl Mean</th><th>Treat Mean</th><th>log2FC</th><th>padj</th><th>Status</th></tr></thead>
+        <tbody id="deg-rows"></tbody>
+      </table>
+    </div>
+    <div class="card">
+      <h2>Scientific Validation Tests (tests/scientific/panel_1_results.json)</h2>
+      <div id="test-panel"></div>
+    </div>
+  </div>
+  <script>
+    const DATA = {"cohort": "Kidney Injury Demo Cohort (n=12)", "total_genes": 14, "significant_genes": 10, "genes": [{"gene": "HAVCR1", "pathway": "Tubular Injury", "mean_ctrl": 12.02, "mean_treat": 97.85, "log2fc": 2.925, "t_stat": 69.38, "pvalue": 1e-12, "padj": 0.0, "neg_log10_padj": 12.0, "significant": true}, {"gene": "LCN2", "pathway": "Tubular Injury", "mean_ctrl": 17.99, "mean_treat": 141.74, "log2fc": 2.91, "t_stat": 69.97, "pvalue": 1e-12, "padj": 0.0, "neg_log10_padj": 12.0, "significant": true}, {"gene": "TIMP2", "pathway": "Cell Cycle Arrest", "mean_ctrl": 23.95, "mean_treat": 85.96, "log2fc": 1.801, "t_stat": 53.77, "pvalue": 1e-12, "padj": 0.0, "neg_log10_padj": 12.0, "significant": true}, {"gene": "IGFBP7", "pathway": "Cell Cycle Arrest", "mean_ctrl": 30.95, "mean_treat": 105.14, "log2fc": 1.732, "t_stat": 53.62, "pvalue": 1e-12, "padj": 0.0, "neg_log10_padj": 12.0, "significant": true}, {"gene": "CXCL10", "pathway": "Inflammation", "mean_ctrl": 15.01, "mean_treat": 68.13, "log2fc": 2.111, "t_stat": 61.87, "pvalue": 1e-12, "padj": 0.0, "neg_log10_padj": 12.0, "significant": true}, {"gene": "CCL2", "pathway": "Inflammation", "mean_ctrl": 22.04, "mean_treat": 74.05, "log2fc": 1.704, "t_stat": 52.39, "pvalue": 1e-12, "padj": 0.0, "neg_log10_padj": 12.0, "significant": true}, {"gene": "UMOD", "pathway": "Tubular Function", "mean_ctrl": 180.28, "mean_treat": 61.93, "log2fc": -1.526, "t_stat": -49.52, "pvalue": 1e-12, "padj": 0.0, "neg_log10_padj": 12.0, "significant": true}, {"gene": "EGF", "pathway": "Tubular Function", "mean_ctrl": 109.98, "mean_treat": 37.93, "log2fc": -1.512, "t_stat": -47.96, "pvalue": 1e-12, "padj": 0.0, "neg_log10_padj": 12.0, "significant": true}, {"gene": "AQP2", "pathway": "Water Transport", "mean_ctrl": 144.75, "mean_treat": 53.95, "log2fc": -1.407, "t_stat": -47.01, "pvalue": 1e-12, "padj": 0.0, "neg_log10_padj": 12.0, "significant": true}, {"gene": "SLC12A1", "pathway": "Ion Transport", "mean_ctrl": 129.78, "mean_treat": 58.06, "log2fc": -1.147, "t_stat": -40.3, "pvalue": 1e-12, "padj": 0.0, "neg_log10_padj": 12.0, "significant": true}, {"gene": "B2M", "pathway": "Housekeeping", "mean_ctrl": 240.1, "mean_treat": 247.52, "log2fc": 0.044, "t_stat": 1.7, "pvalue": 0.08822414993337505, "padj": 0.11228528, "neg_log10_padj": 0.95, "significant": false}, {"gene": "ACTB", "pathway": "Housekeeping", "mean_ctrl": 520.82, "mean_treat": 512.6, "log2fc": -0.023, "t_stat": -0.89, "pvalue": 0.37233128654318143, "padj": 0.4343865, "neg_log10_padj": 0.36, "significant": false}, {"gene": "GAPDH", "pathway": "Housekeeping", "mean_ctrl": 409.95, "mean_treat": 415.81, "log2fc": 0.02, "t_stat": 0.8, "pvalue": 0.4260039822444158, "padj": 0.45877352, "neg_log10_padj": 0.34, "significant": false}, {"gene": "RPLP0", "pathway": "Housekeeping", "mean_ctrl": 305.56, "mean_treat": 308.79, "log2fc": 0.015, "t_stat": 0.59, "pvalue": 0.5567546297540206, "padj": 0.55675463, "neg_log10_padj": 0.25, "significant": false}]};
+    const TESTS = [{"id": 1, "statement": "Canonical tubular injury biomarkers (HAVCR1, LCN2) are significantly upregulated (log2FC >= 2.0, padj <= 0.05).", "status": "PASS", "comment": "HAVCR1 log2FC=2.925, LCN2 log2FC=2.91"}, {"id": 2, "statement": "Housekeeping control genes (GAPDH, ACTB, RPLP0, B2M) exhibit |log2FC| < 0.25.", "status": "PASS", "comment": "Max housekeeping |log2FC|=0.044"}, {"id": 3, "statement": "Tubular function marker UMOD is significantly downregulated (log2FC <= -1.0).", "status": "PASS", "comment": "UMOD log2FC=-1.526"}];
+    const svg = document.getElementById('volcano');
+    const padX = 45, padY = 25, W = 600 - padX * 2, H = 260 - padY * 2;
+    const xScale = v => padX + ((v + 4) / 8) * W;
+    const yScale = v => padY + H - (Math.min(12, v) / 12) * H;
+    let markup = '<line x1="' + xScale(0) + '" y1="20" x2="' + xScale(0) + '" y2="235" stroke="#cbd5e1" stroke-dasharray="4"/>';
+    for (const g of DATA.genes) {
+      const cx = xScale(g.log2fc), cy = yScale(g.neg_log10_padj);
+      const fill = g.significant ? (g.log2fc > 0 ? '#2563eb' : '#ea580c') : '#94a3b8';
+      markup += '<circle cx="' + cx + '" cy="' + cy + '" r="5" fill="' + fill + '"><title>' + g.gene + ' (log2FC=' + g.log2fc + ')</title></circle>';
+      if (g.significant) markup += '<text x="' + (cx + 7) + '" y="' + (cy + 3) + '" font-size="10" fill="#1e293b">' + g.gene + '</text>';
+    }
+    svg.innerHTML = markup;
+    document.getElementById('deg-rows').innerHTML = DATA.genes.map(g =>
+      '<tr><td><strong>' + g.gene + '</strong></td><td>' + g.pathway + '</td><td>' + g.mean_ctrl + '</td><td>' + g.mean_treat + '</td><td>' + g.log2fc + '</td><td>' + g.padj + '</td><td><span class="badge ' + (g.significant ? 'sig">Significant' : 'ns">NS') + '</span></td></tr>'
+    ).join('');
+    document.getElementById('test-panel').innerHTML = TESTS.length
+      ? TESTS.map(t => '<p><span class="badge ' + (t.status === 'PASS' ? 'pass' : 'fail') + '">' + t.status + '</span> <strong>' + t.statement + '</strong> — ' + t.comment + '</p>').join('')
+      : '<p class="meta">Run <code>./scripts/run.sh</code> to populate scientific test validation results.</p>';
+  </script>
+</body>
+</html>

@@ -71,6 +71,7 @@ test('Workspace Service Unit Tests', async (t) => {
     const { shouldIgnoreWatchedPath } = await import('../dist-server/services/fileWatcher.js');
     assert.equal(shouldIgnoreWatchedPath(path.join(tempDir, '.venv/lib/python3.12/site.py')), true);
     assert.equal(shouldIgnoreWatchedPath(path.join(tempDir, '.git/HEAD')), true);
+    assert.equal(shouldIgnoreWatchedPath(path.join(tempDir, 'lost+found')), true);
     assert.equal(shouldIgnoreWatchedPath(path.join(tempDir, '.bionic/sessions/s1.json')), true);
     assert.equal(shouldIgnoreWatchedPath(path.join(tempDir, 'data/manifest.json.tmp.1234.abc')), true);
     assert.equal(shouldIgnoreWatchedPath(path.join(tempDir, '.gitignore')), false);
@@ -194,6 +195,12 @@ test('Workspace Service Unit Tests', async (t) => {
     const treeWithDots = getFileTree(tempDir, '', { includeDotItems: true });
     const gitignore = treeWithDots.find(i => i.name === '.gitignore');
     assert.ok(gitignore && gitignore.isDotItem === true);
+
+    // ext4 `lost+found` must always be hidden from Explorer
+    fs.mkdirSync(path.join(tempDir, 'lost+found'), { recursive: true });
+    const treeAfterLostFound = getFileTree(tempDir, '', { includeDotItems: true });
+    assert.equal(treeAfterLostFound.some(i => i.name === 'lost+found'), false);
+    fs.rmdirSync(path.join(tempDir, 'lost+found'));
 
     fs.unlinkSync(brokenLink);
   });
